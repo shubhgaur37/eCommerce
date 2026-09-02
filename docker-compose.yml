@@ -1,0 +1,273 @@
+name: ecommerce
+
+services:
+
+  # Elasticsearch stores and indexes application logs.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2
+
+    # Explicit container name.
+    #
+    # Because container_name is explicitly provided, Docker Compose
+    # will NOT prefix it with the project name.
+    container_name: elasticsearch
+
+    environment:
+      # Run Elasticsearch as a single-node cluster.
+      - discovery.type=single-node
+
+      # Password for the built-in "elastic" superuser.
+      #
+      # This value can also be supplied using:
+      # ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      #
+      # The value is read from the shell environment first, and then
+      # from the .env file if it is not available in the shell.
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+
+    volumes:
+      # Docker-managed volume used to persist Elasticsearch data.
+      #
+      # Data survives container removal.
+      - elastic_search_data:/usr/share/elasticsearch/data
+
+    ports:
+      # Host port : Container port
+      #
+      # Allows applications running on the host machine to access
+      # Elasticsearch at http://localhost:9200.
+      - "9200:9200"
+
+    networks:
+      # Connect Elasticsearch to the custom ELK network.
+      - elk
+
+
+  # One-time setup container.
+  #
+  # Its only purpose is to configure the password of the built-in
+  # kibana_system user before Kibana starts.
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2
+
+    depends_on:
+      elasticsearch:
+        # Start the setup container after Elasticsearch has started.
+        #
+        # service_started does not necessarily mean Elasticsearch is
+        # fully ready, which is why the script below waits using curl.
+        condition: service_started
+
+    environment:
+      # Elasticsearch superuser password.
+      #
+      # Used by the setup script to authenticate as "elastic" and
+      # perform the administrative operation.
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+
+      # Password that will be assigned to the built-in kibana_system user.
+      - KIBANA_PASSWORD=${KIBANA_PASSWORD}
+
+    # Use the list form of command.
+    #
+    # bash -> executable
+    # -c   -> tells Bash to execute the next argument as a script
+    # - |  -> YAML literal block containing the COMPLETE shell script
+    #
+    # Everything indented below "- |" becomes ONE string and is passed
+    # as the script argument to "bash -c".
+    #
+    # This avoids YAML/Docker Compose splitting parts of a multiline
+    # shell script into separate command arguments.
+    command:
+      - bash
+      - -c
+      - |
+        echo "Setup container started"
+        
+        # Wait until Elasticsearch is available.
+        #
+        # Elasticsearch 9.x is using HTTPS with a self-signed certificate.
+        #
+        # "-k" tells curl to skip SSL certificate verification.
+        #
+        # "elasticsearch" is the Docker Compose service name.
+        # Docker resolves this name to the Elasticsearch container
+        # because both containers are on the same network.
+        until curl -s -k \
+          -u elastic:$${ELASTIC_PASSWORD} \
+          https://elasticsearch:9200 \
+          | grep -q "cluster_name";
+        do
+          echo "Waiting for Elasticsearch..."
+          sleep 5
+        done
+        
+        echo "Elasticsearch is ready"
+        
+        # Set the password for the built-in "kibana_system" user.
+        #
+        # The "elastic" user is used here because it has administrative
+        # privileges required to update another user's password.
+        until curl -s -k -X POST \
+          -u elastic:$${ELASTIC_PASSWORD} \
+          -H "Content-Type: application/json" \
+          https://elasticsearch:9200/_security/user/kibana_system/_password \
+          -d "{\"password\":\"$${KIBANA_PASSWORD}\"}" \
+          | grep -q "^{}";
+        do
+          echo "Retrying Kibana password setup..."
+          sleep 5
+        done
+        
+        echo "Kibana system password configured"
+
+    networks:
+      # Connect setup to the ELK network so it can reach Elasticsearch
+      # using the service name "elasticsearch".
+      - elk
+
+
+  # Logstash reads application logs and sends them to Elasticsearch.
+  logstash:
+    image: docker.elastic.co/logstash/logstash:9.5.2
+
+    # Explicit container name.
+    container_name: logstash
+
+    depends_on:
+      elasticsearch:
+        # Logstash starts after the Elasticsearch container starts.
+        #
+        # Logstash may still retry connections if Elasticsearch is
+        # not fully ready yet.
+        condition: service_started
+
+    volumes:
+      # Bind mount the Logstash pipeline configuration.
+      #
+      # :ro means read-only.
+      #
+      # Logstash can read the configuration but cannot modify the
+      # file on the host machine.
+      - ./elk-config/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+
+      # Bind mount the application logs.
+      #
+      # The host directory "./logs" is available inside the container
+      # at "/logs".
+      #
+      # Read-only prevents Logstash from modifying application logs.
+      - ./logs:/logs:ro
+
+    environment:
+      # Password used by Logstash when authenticating with Elasticsearch.
+      #
+      # The logstash.conf file accesses this using:
+      # ${ELASTIC_PASSWORD}
+      #
+      # Docker Compose replaces ${ELASTIC_PASSWORD} here with the value
+      # from the shell environment or .env file and passes it into the
+      # Logstash container.
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+
+    networks:
+      # Connect Logstash to the ELK network.
+      #
+      # This allows it to connect to Elasticsearch using:
+      # http://elasticsearch:9200
+      - elk
+
+
+  # Kibana provides the UI for viewing and searching Elasticsearch data.
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.5.2
+
+    # Explicit container name.
+    container_name: kibana
+
+    depends_on:
+      setup:
+        # Kibana starts only after the setup container completes
+        # successfully.
+        #
+        # The setup container exits because it is a one-time
+        # initialization container.
+        condition: service_completed_successfully
+
+    environment:
+      # Connect to Elasticsearch using its Docker Compose service name.
+      #
+      # Docker containers on the same network can communicate using
+      # service names through Docker's internal DNS.
+      #
+      # "elasticsearch" here is the SERVICE NAME, not localhost.
+      #
+      # Port 9200 is Elasticsearch's internal container port.
+      # This is different from accessing Elasticsearch from the host,
+      # where https://localhost:9200 uses Docker port publishing.
+      - ELASTICSEARCH_HOSTS=https://elasticsearch:9200
+
+      # Kibana must use the built-in kibana_system user for its
+      # internal connection to Elasticsearch.
+      #
+      # The "elastic" user is a superuser intended for administrative
+      # operations and Kibana does not allow it for this purpose.
+      #
+      # kibana_system is specifically intended for Kibana to manage
+      # the internal Elasticsearch system indices it requires.
+      - ELASTICSEARCH_USERNAME=kibana_system
+
+      # Password configured by the setup container.
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+
+      # Elasticsearch uses a self-signed certificate.
+      # Disable certificate verification for this local development setup.
+      - ELASTICSEARCH_SSL_VERIFICATIONMODE=none
+
+    ports:
+      # Host port : Container port
+      #
+      # Allows Kibana to be accessed from the host machine at:
+      # http://localhost:5601
+      - "5601:5601"
+
+    networks:
+      # Connect Kibana to the ELK network.
+      - elk
+
+
+# Docker-managed persistent volumes.
+volumes:
+
+  # Elasticsearch data persists independently of the Elasticsearch
+  # container.
+  #
+  # Docker Compose automatically prefixes this resource with the
+  # Compose project name unless an explicit name is provided.
+  #
+  # With:
+  # name: ecommerce
+  #
+  # Docker creates a volume similar to:
+  # ecommerce_elastic_search_data
+  elastic_search_data:
+
+
+# Custom Docker networks.
+networks:
+
+  # Custom network shared by Elasticsearch, Logstash, Kibana,
+  # and the one-time setup container.
+  #
+  # Containers connected to this network can communicate using
+  # Docker Compose service names.
+  #
+  # For example:
+  # http://elasticsearch:9200
+  elk:
+
+  # Docker Compose uses the "bridge" driver by default for local
+  # custom networks, so explicitly specifying it is not required.
+  #
+  # driver: bridge
