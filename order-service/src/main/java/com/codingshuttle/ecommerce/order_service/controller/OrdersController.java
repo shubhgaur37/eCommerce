@@ -18,7 +18,7 @@ import java.util.List;
 @RequestMapping("/core")
 @RequiredArgsConstructor
 @Slf4j
-@RefreshScope
+@RefreshScope // make this bean refreshable
 public class OrdersController {
 
     private final OrdersService orderService;
