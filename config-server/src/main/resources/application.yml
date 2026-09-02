@@ -8,7 +8,7 @@ spring:
         git:
           uri: https://github.com/shubhgaur37/ecommerce-config-server
           username: shubhgaur37
-          password: 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
+          password: ${GIT_REPO_TOKEN}
           default-label: main
 
 
