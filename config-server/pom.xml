@@ -34,11 +34,19 @@
 		<dependency>
 			<groupId>org.springframework.cloud</groupId>
 			<artifactId>spring-cloud-config-server</artifactId>
+
 		</dependency>
-		<dependency>
-			<groupId>org.springframework.cloud</groupId>
-			<artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
-		</dependency>
+<!--	# The Config Server URL is explicitly specified in this project.
+		#
+		# Alternatively, the Config Server can be registered with the Discovery Server
+		# so that services can locate it dynamically instead of hardcoding its URL.
+		# This is useful when the Config Server runs on multiple instances or its
+		# address may change across environments.
+		# for all services-->
+<!--		<dependency>-->
+<!--			<groupId>org.springframework.cloud</groupId>-->
+<!--			<artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>-->
+<!--		</dependency>-->
 
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
