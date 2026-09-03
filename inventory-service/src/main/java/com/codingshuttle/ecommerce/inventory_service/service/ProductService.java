@@ -8,9 +8,13 @@ import com.codingshuttle.ecommerce.inventory_service.repository.ProductRepositor
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.modelmapper.ModelMapper;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -21,6 +25,8 @@ public class ProductService {
 
     private final ProductRepository productRepository;
     private final ModelMapper modelMapper;
+    // key and value type for the message
+    private final KafkaTemplate<String,String> kafkaTemplate;
 
     public List<ProductDto> getAllInventory() {
         log.info("Fetching all inventory items");
@@ -41,13 +47,15 @@ public class ProductService {
     public Double reduceStocks(OrderRequestDto orderRequestDto) {
         log.info("Reducing the stocks");
         Double totalPrice = 0.0;
+        List<String> productNames = new ArrayList<>();
         for(OrderRequestItemDto orderRequestItemDto: orderRequestDto.getItems()) {
             Long productId = orderRequestItemDto.getProductId();
             Integer quantity = orderRequestItemDto.getQuantity();
 
             Product product = productRepository.findById(productId).orElseThrow(() ->
                     new RuntimeException("Product not found with id: "+productId));
-
+            // for kafka message
+            productNames.add(product.getName());
             if(product.getStock() < quantity) {
                 throw new RuntimeException("Product cannot be fulfilled for given quantity");
             }
@@ -56,8 +64,22 @@ public class ProductService {
             productRepository.save(product);
             totalPrice += quantity*product.getPrice();
         }
+        sendOrderSuccessfulMessage(productNames);
         return totalPrice;
     }
+
+    // Kafka Demo Order Created Message
+    private void sendOrderSuccessfulMessage(List<String> productNames) {
+
+        // Kafka can auto-create the topic if it does not already exist,
+        // but relying on auto-creation is error-prone and not recommended
+        // for production. Topics should be created and configured explicitly.
+        kafkaTemplate.send(
+                "OrderCreatedItems",
+                "Order Created for items: " + productNames
+        );
+    }
+
 }
 
 
