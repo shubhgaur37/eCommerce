@@ -11,6 +11,7 @@ import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import io.github.resilience4j.retry.annotation.Retry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.modelmapper.ModelMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -93,8 +94,18 @@ public class OrdersService {
 
     // uses the default group ID defined in application.properties
     @KafkaListener(topics = {"${kafka.topic.OrderCreatedItemsTopic}"})
-    public void printConsoleOrderCreatedItemsMessage(String message) {
-        System.out.println("OrderCreated Console Consumer Message: "+ message);
+    public void printConsoleOrderCreatedItemsMessage(ConsumerRecord<String, String> record) {
+        // ConsumerRecord provides access to the complete Kafka record, including the message value,
+        // key, topic, partition, offset, timestamp, and headers. Using it is useful for debugging,
+        // monitoring, and troubleshooting because we can identify exactly where a message came from,
+        // its position within the topic, and inspect metadata such as trace headers.
+        System.out.println("OrderCreated Console Consumer Message: "+ record.value());
+
+        // check whether message contains trace headers
+        record.headers().forEach(header ->
+                log.info("KAFKA Header: {} = {}", header.key(), new String(header.value()))
+        );
+
     }
 }
 
