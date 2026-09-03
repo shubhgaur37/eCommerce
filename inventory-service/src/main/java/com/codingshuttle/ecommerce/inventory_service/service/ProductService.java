@@ -7,7 +7,9 @@ import com.codingshuttle.ecommerce.inventory_service.entity.Product;
 import com.codingshuttle.ecommerce.inventory_service.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.modelmapper.ModelMapper;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,8 +27,13 @@ public class ProductService {
 
     private final ProductRepository productRepository;
     private final ModelMapper modelMapper;
+
     // key and value type for the message
     private final KafkaTemplate<String,String> kafkaTemplate;
+
+    // kafka topic to publish message
+    @Value("${kafka.topic.OrderCreatedItemsTopic}")
+    private String orderCreatedItemsTopicName;
 
     public List<ProductDto> getAllInventory() {
         log.info("Fetching all inventory items");
@@ -75,7 +82,7 @@ public class ProductService {
         // but relying on auto-creation is error-prone and not recommended
         // for production. Topics should be created and configured explicitly.
         kafkaTemplate.send(
-                "OrderCreatedItems",
+                orderCreatedItemsTopicName,
                 "Order Created for items: " + productNames
         );
     }
