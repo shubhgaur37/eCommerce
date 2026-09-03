@@ -96,6 +96,13 @@
 			<groupId>io.github.openfeign</groupId>
 			<artifactId>feign-micrometer</artifactId>
 		</dependency>
+
+<!--		Kafka Dependency -->
+		<dependency>
+			<groupId>org.springframework.kafka</groupId>
+			<artifactId>spring-kafka</artifactId>
+			<version>3.3.4</version>
+		</dependency>
 	</dependencies>
 
 	<dependencyManagement>

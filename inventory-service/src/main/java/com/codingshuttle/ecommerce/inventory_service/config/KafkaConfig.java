@@ -9,7 +9,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class KafkaConfig {
 
-    @Value("${kafka.topic.OrderCreatedItemsTopic}")
+    @Value("${kafka.topic.OrderCreatedItemsTopicName}")
     private String orderCreatedItemsTopicName;
 
     @Bean

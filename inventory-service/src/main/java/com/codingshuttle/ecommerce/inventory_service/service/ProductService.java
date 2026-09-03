@@ -32,7 +32,7 @@ public class ProductService {
     private final KafkaTemplate<String,String> kafkaTemplate;
 
     // kafka topic to publish message
-    @Value("${kafka.topic.OrderCreatedItemsTopic}")
+    @Value("${kafka.topic.OrderCreatedItemsTopicName}")
     private String orderCreatedItemsTopicName;
 
     public List<ProductDto> getAllInventory() {

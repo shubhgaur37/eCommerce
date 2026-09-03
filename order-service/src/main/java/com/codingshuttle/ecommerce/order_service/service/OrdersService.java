@@ -12,6 +12,8 @@ import io.github.resilience4j.retry.annotation.Retry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.modelmapper.ModelMapper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -62,6 +64,38 @@ public class OrdersService {
         return new OrderRequestDto();
     }
 
+    // Consumer group ID identifies the consumer group.
+    // The committed offset is maintained by Kafka for each partition of the group,
+    // not by an individual consumer instance.
+    //
+    // If a consumer goes down and a new consumer joins the same group,
+    // Kafka reassigns the partitions to the new consumer.
+    // The new consumer continues from the last committed offset of the group,
+    // rather than starting from the beginning.
+    //
+    // This allows consumers to safely go down and come back up without
+    // losing their position in the topic.
+    @KafkaListener(
+            topics = {"${kafka.topic.OrderCreatedItemsTopic}"},
+            groupId = "order-service-logger"
+    )
+    public void logOrderCreatedItemsMessage(String message) {
+        log.info("OrderCreated Logger Message: " + message);
+    }
+
+
+
+    // Listen to the topic configured in application properties.
+    // Multiple topics can be passed to the listener by providing multiple
+    // topic names or property placeholders in the topics array.
+    // This method will be invoked whenever a message is received from any
+    // of the configured topics.
+
+    // uses the default group ID defined in application.properties
+    @KafkaListener(topics = {"${kafka.topic.OrderCreatedItemsTopic}"})
+    public void printConsoleOrderCreatedItemsMessage(String message) {
+        System.out.println("OrderCreated Console Consumer Message: "+ message);
+    }
 }
 
 
