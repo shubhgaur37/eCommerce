@@ -5,15 +5,13 @@ import com.codingshuttle.ecommerce.order_service.dto.OrderRequestDto;
 import com.codingshuttle.ecommerce.order_service.entity.OrderItem;
 import com.codingshuttle.ecommerce.order_service.entity.OrderStatus;
 import com.codingshuttle.ecommerce.order_service.entity.Orders;
+import com.codingshuttle.ecommerce.inventory_service.events.OrderConfirmedEvent;
 import com.codingshuttle.ecommerce.order_service.repoitory.OrdersRepository;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
-import io.github.resilience4j.retry.annotation.Retry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.modelmapper.ModelMapper;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Service;
 
@@ -45,7 +43,7 @@ public class OrdersService {
 //    @RateLimiter(name = "inventoryRateLimiter", fallbackMethod = "createOrderFallback")
     public OrderRequestDto createOrder(OrderRequestDto orderRequestDto) {
         log.info("Calling the createOrder method");
-        Double totalPrice = inventoryOpenFeignClient.reduceStocks(orderRequestDto);
+        Double totalPrice = reserveInventory(orderRequestDto);
 
         Orders orders = modelMapper.map(orderRequestDto, Orders.class);
         for(OrderItem orderItem: orders.getItems()) {
@@ -57,6 +55,25 @@ public class OrdersService {
         Orders savedOrder = orderRepository.save(orders);
 
         return modelMapper.map(savedOrder, OrderRequestDto.class);
+    }
+
+    public Double reserveInventory(OrderRequestDto orderRequestDto){
+        log.info("Making a synchronous call to inventory service reduce-stocks method to reserve inventory");
+        return inventoryOpenFeignClient.reduceStocks(orderRequestDto);
+    }
+
+    @KafkaListener(topics = {"${kafka.topic.OrderConfirmedTopic}"}, groupId = "${kafka.consumer.order_creation.group.id}")
+    public void createOrderFromInventoryReductionEvent(OrderConfirmedEvent orderConfirmedEvent){
+        Orders orders = modelMapper.map(orderConfirmedEvent, Orders.class);
+        for(OrderItem orderItem: orders.getItems()) {
+            orderItem.setOrder(orders);
+        }
+        orders.setTotalPrice(orderConfirmedEvent.getTotalPrice());
+        orders.setOrderStatus(OrderStatus.CONFIRMED);
+
+        Orders savedOrder = orderRepository.save(orders);
+        OrderRequestDto savedOrderResponse = modelMapper.map(savedOrder, OrderRequestDto.class);
+        log.info("Order Created From Event: {}",savedOrderResponse);
     }
 
     public OrderRequestDto createOrderFallback(OrderRequestDto orderRequestDto, Throwable throwable) {
