@@ -272,11 +272,37 @@ sequenceDiagram
 ```
 
 Spring's JSON deserializer accepts type metadata only from trusted packages.
-The configuration trusts `com.codingshuttle.ecommerce.*` so the event can be
-deserialized. Keep this scope as narrow as practical; accepting arbitrary
-packages is unsafe. For a production system, move shared event contracts into
-a dedicated, versioned module rather than duplicating event classes across
-services.
+Because `inventory-service` and `order-service` are separate Maven modules and
+do not currently depend on a shared event-contract module,
+`OrderConfirmedEvent` is declared in **both** services. The consumer-side copy
+deliberately uses the same fully qualified class name as the producer-side
+copy:
+
+```text
+com.codingshuttle.ecommerce.inventory_service.events.OrderConfirmedEvent
+```
+
+Spring Kafka's producer adds that class name to the `__TypeId__` header. Keeping
+the same package and class name on the consumer classpath lets the JSON
+deserializer resolve the type. The consumer was also refactored to receive the
+typed event, map its `items` and `totalPrice`, set the order status to
+`CONFIRMED`, and persist the resulting order.
+
+The order service supplies the matching consumer configuration:
+
+```properties
+spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.LongDeserializer
+spring.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.JsonDeserializer
+spring.kafka.consumer.properties.spring.json.trusted.packages=com.codingshuttle.ecommerce.*
+```
+
+The trusted-package property is required because `JsonDeserializer` does not
+instantiate classes named by message headers unless their package is trusted.
+Keep this scope as narrow as practical; setting it to a global `*` would allow
+arbitrary packages and weaken that deserialization safeguard. Duplicating the
+class is acceptable for this learning project, but a production system should
+move the event and its nested contract types into a dedicated, versioned
+module shared by producers and consumers.
 
 ### Database and event consistency
 
@@ -465,26 +491,123 @@ filters:
 This keeps rate limiting at the edge, while the active service-side circuit
 breaker protects the order service from a failing inventory service.
 
-## Docker learnings captured here
+## Learnings from the incremental commits
 
-- **Compose service discovery:** containers on the same custom network reach
-  each other by Compose service name, e.g. `https://elasticsearch:9200`.
-- **Host vs. container ports:** `9200:9200` and `5601:5601` publish ports for
-  the host; containers communicate on their internal ports instead.
-- **Named volumes:** `elastic_search_data` outlives containers, preserving
-  Elasticsearch data across `docker compose down`.
-- **Bind mounts:** Logstash receives both its pipeline and application logs
-  through read-only mounts. Changes to `elk-config/logstash.conf` are made in
-  the repository, not inside the container.
-- **One-time initialization:** the `setup` container waits for readiness with
-  `curl` before configuring Kibana credentials; `depends_on` alone only
-  controls start order, not application readiness.
-- **Secrets through environment variables:** passwords and tokens are
-  referenced with `${...}` rather than embedded in Compose or application
-  configuration. Keep `.env` and exported tokens out of version control.
-- **Local TLS trade-off:** Elasticsearch uses a self-signed certificate, and
-  Kibana/Logstash disable certificate verification for this local learning
-  environment. Do not carry that setting into production.
+This project was built one capability at a time. The following section
+consolidates the main lessons from those commits so they can be reviewed
+without reconstructing the Git history.
+
+### Service boundaries and synchronous communication
+
+- **Start with explicit service ownership.** Order and inventory keep their
+  own controllers, DTOs, persistence models, and databases. A microservice
+  boundary is useful only when data and responsibilities are not silently
+  shared through implementation classes.
+- **Discovery removes fixed service locations.** Eureka allows clients and the
+  gateway to address an application by service name instead of maintaining a
+  list of host-and-port pairs.
+- **OpenFeign makes HTTP calls convenient, not reliable.** A declarative
+  client reduces boilerplate, but the remote call can still time out, fail, or
+  partially complete. Failure behavior must be designed explicitly.
+- **Resilience policies serve different purposes.** A circuit breaker prevents
+  repeated calls to an unhealthy dependency, retries handle selected transient
+  failures, and rate limiters protect capacity. Enabling all three without
+  understanding their interaction can amplify traffic or hide failures.
+
+### Gateway, filters, and authentication
+
+- **Global and route filters have different scope.** A global filter observes
+  every request, while a named `GatewayFilterFactory` runs only on routes that
+  declare it. Filter order determines when logging, authentication, and routing
+  behavior execute.
+- **Authentication at the edge must pass identity safely.** The gateway
+  validates the bearer token before adding `X-User-Id`; downstream services
+  should trust that header only when direct, unauthenticated access to them is
+  prevented.
+- **Circuit breaking and edge rate limiting solve different problems.** The
+  current circuit breaker protects the order-to-inventory dependency. Gateway
+  rate limiting would additionally require a key strategy and shared state
+  such as Redis.
+
+### Centralized configuration and refresh scope
+
+- **Bootstrap configuration must remain local.** A client needs its
+  `spring.application.name` and Config Server import before it can retrieve the
+  rest of its configuration.
+- **External configuration introduces startup dependencies.** Config clients
+  cannot start normally until the Config Server can reach its Git repository,
+  so startup order, repository access, and credentials are operational
+  concerns.
+- **`@RefreshScope` belongs on the bean holding refreshed values.** Refreshing
+  recreates that scoped bean; callers such as controllers do not also require
+  the annotation merely because they inject it.
+- **A distributed feature flag must be consistent.** Both order and inventory
+  participate in the event-driven order flow. Refreshing only one service can
+  leave them following different protocols.
+
+### Kafka messaging and event contracts
+
+- **Topics, serializers, and deserializers form one contract.** Producer and
+  consumer must agree on the topic name, key type, value format, and event
+  shape. A `LongSerializer`/`JsonSerializer` producer therefore needs the
+  corresponding `LongDeserializer`/`JsonDeserializer` consumer.
+- **Consumer groups control delivery and progress.** Different groups each
+  receive a record; instances in one group divide partitions. Offsets belong
+  to the group and partition, not to a particular application instance.
+- **`auto-offset-reset=earliest` is not a replay switch.** It applies only when
+  the group has no committed offset. Use a new group or explicitly reset
+  offsets when a local replay is intended.
+- **Spring JSON type headers couple the consumer to a Java type name.** In the
+  current design, `OrderConfirmedEvent` exists in both Maven modules with the
+  same fully qualified name so the consumer can resolve the producer's
+  `__TypeId__`. The consumer must also trust that package. A shared, versioned
+  contract module—or an explicitly mapped schema-based contract—is a cleaner
+  production design.
+- **Trust only the required deserialization packages.** The current
+  `com.codingshuttle.ecommerce.*` scope permits this project's event class.
+  Trusting every package with `*` removes an important defense against
+  untrusted type metadata.
+- **Publishing after a database update is not atomic.** An asynchronous Kafka
+  send and a database transaction can succeed independently. The transactional
+  outbox pattern closes the gap when reliable event publication is required.
+- **Observability crosses asynchronous boundaries through headers.** Enabling
+  observation on both `KafkaTemplate` and listeners propagates trace context,
+  but application logging must treat arbitrary Kafka headers as binary and
+  potentially sensitive.
+
+### Logging and distributed observability
+
+- **Correlation matters more than isolated log lines.** Trace and span IDs
+  connect gateway, service-to-service HTTP, and Kafka activity into one request
+  story.
+- **Structured, service-specific log files simplify ingestion.** Logback writes
+  each application's rolling files below `logs/`; Logstash tails those mounts
+  and sends events to date-based Elasticsearch indexes for Kibana discovery.
+- **Tracing and logging complement each other.** Zipkin explains request and
+  span timing, while Elasticsearch retains searchable application context and
+  errors.
+
+### Docker, networking, and secrets
+
+- **Compose service discovery is network-local.** Containers on the same
+  custom network use service names such as `elasticsearch` or `broker`;
+  processes on the host use published ports such as `localhost:9200` or
+  `localhost:29092`.
+- **Named volumes and bind mounts have different lifecycles.** The
+  `elastic_search_data` volume preserves indexed data, while Logstash receives
+  repository-owned configuration and logs through read-only bind mounts.
+- **Startup order is not readiness.** The one-time `setup` container checks
+  Elasticsearch readiness before configuring Kibana. `depends_on` by itself
+  only controls container start ordering unless paired with a health condition.
+- **Secrets should enter through the launch environment.** Compose reads local
+  values from `.env`; an IDE-run Java process needs those values configured in
+  its run configuration, and a terminal-run process needs them exported.
+- **Removing a leaked secret from the latest file is insufficient.** Rotate it
+  immediately and clean Git history where necessary because earlier commits,
+  clones, and forks may still contain it.
+- **Local TLS shortcuts are not production defaults.** Disabling certificate
+  verification can be acceptable for this self-signed learning environment,
+  but deployed systems should validate certificates.
 
 ## Useful development checks
 
