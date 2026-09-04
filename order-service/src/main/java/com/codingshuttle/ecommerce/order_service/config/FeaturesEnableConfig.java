@@ -10,7 +10,7 @@ import org.springframework.context.annotation.Configuration;
 @Data
 public class FeaturesEnableConfig {
 
-    @Value("${features.user-tracking-enabled}")
-    private boolean isUserTrackingEnabled;
+    @Value("${features.event_driven_order_flow.enabled}")
+    private boolean eventDrivenOrderFlowEnabled;
 
 }
