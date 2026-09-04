@@ -13,7 +13,8 @@ an ELK observability stack running with Docker Compose.
 | Centralized configuration | `config-server` (port `8888`) | Serves configuration from the separate Git repository configured in `application.yml`. |
 | Edge service | `api-gateway` | Spring Cloud Gateway with logging and JWT-related filters. |
 | Business services | `inventory-service`, `order-service` | Inventory and order APIs, PostgreSQL/JPA support, and OpenFeign clients. |
-| Distributed tracing | Micrometer Observation, Brave, Zipkin reporter dependencies | Provides the building blocks for trace/span propagation. |
+| Event messaging | Apache Kafka | Inventory publishes order-item events; order service consumes them in independent consumer groups. |
+| Distributed tracing | Micrometer Observation, Brave, Zipkin reporter dependencies | Propagates trace context across HTTP and Kafka when observation is enabled. |
 | Log aggregation | Elasticsearch, Logstash, Kibana | Reads local service log files and makes them searchable in Kibana. |
 
 ## Architecture at a glance
@@ -172,6 +173,80 @@ For example, `order-service` requests its `order-service` configuration from
 the Config Server. This keeps environment-specific service configuration out
 of the application source repositories. A service cannot start normally if it
 cannot resolve this required Config Server import.
+
+## Kafka event messaging and tracing
+
+The inventory service publishes an event after it successfully reduces stock
+for an order. The order service has two listeners for that event: one logs the
+message in the `order-service-logger` group, and the other uses the default
+`order-service` group. Because these are different consumer groups, each group
+gets its own copy of every event; consumers within the *same* group would share
+partitions and therefore split the work.
+
+```text
+inventory-service
+  reduce stock successfully
+          |
+          v
+KafkaTemplate -> OrderCreatedItemsTopic (3 partitions, replication factor 1)
+          |
+          +--> order-service-logger group -> application log
+          |
+          +--> order-service group        -> console + record metadata/headers
+```
+
+`KafkaConfig` declares `OrderCreatedItemsTopic` explicitly with three
+partitions. Explicit topic creation avoids depending on broker auto-creation;
+the single replica is appropriate only for the local single-broker setup.
+Topic names are configured properties, so publishers and consumers must use
+the same value. In this repository, inventory uses
+`kafka.topic.OrderCreatedItemsTopicName` and order uses
+`kafka.topic.OrderCreatedItemsTopic`; both currently resolve to
+`OrderCreatedItemsTopic`.
+
+### Connecting to the local broker
+
+Services run directly on the host, so they use the host-facing Kafka listener:
+
+```properties
+spring.kafka.bootstrap-servers=localhost:29092
+```
+
+Containers on the Docker network must instead use the internal listener (for
+example, `broker:9092`). `broker` is resolvable only inside that Docker network;
+from a host process it is not a valid broker address. This is why local Kafka
+setups commonly advertise separate host and Docker listeners.
+
+### Consumer offsets: the important caveat
+
+The order service configures:
+
+```properties
+spring.kafka.consumer.auto-offset-reset=earliest
+```
+
+`earliest` applies only when a consumer group has no committed offset for a
+partition. It does not rewind an existing group. If a group has already
+started at `latest` (or has consumed records), changing this property later
+will not replay earlier events. For a deliberate replay in local development,
+use a new group ID or explicitly reset that group's offsets with Kafka tooling.
+
+### Kafka trace propagation
+
+Both services enable Micrometer Observation for Kafka templates and listeners:
+
+```properties
+spring.kafka.template.observation-enabled=true
+spring.kafka.listener.observation-enabled=true
+```
+
+With the existing Micrometer/Brave/Zipkin dependencies and tracing exporter
+configuration, these settings create producer and consumer observations and
+propagate trace context in Kafka headers. The order service receives a
+`ConsumerRecord` in one listener so its value, topic, partition, offset,
+timestamp, and headers can be inspected while troubleshooting. Header values
+are binary data in general, so production logging should avoid blindly
+rendering sensitive or non-text headers.
 
 ## Refresh scope: update configuration without a restart
 
