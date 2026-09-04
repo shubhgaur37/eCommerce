@@ -7,7 +7,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -17,7 +16,9 @@ import java.util.List;
 @RequestMapping("/core")
 @RequiredArgsConstructor
 @Slf4j
-@RefreshScope // make this bean refreshable
+// @RefreshScope is not required here because FeaturesEnableConfig is already
+// refresh-scoped. The controller uses that bean to access the latest
+// configuration values after /actuator/refresh.
 public class OrdersController {
 
     private final OrdersService orderService;
@@ -30,17 +31,24 @@ public class OrdersController {
     @GetMapping("/helloOrders")
     public String helloOrders() {
 
-        if (featuresEnableConfig.isUserTrackingEnabled()) {
-            return "User tracking enabled wohoo, my variable is: "+ myVariable;
+        if (featuresEnableConfig.isEventDrivenOrderFlowEnabled()) {
+            return "Event Driven enabled wohoo, my variable is: "+ myVariable;
         } else {
-           return "User tracking disabled awww, my variable is: "+ myVariable;
+           return "EventDriven disabled awww, my variable is: "+ myVariable;
         }
     }
 
     @PostMapping("/create-order")
     public ResponseEntity<OrderRequestDto> createOrder(@RequestBody OrderRequestDto orderRequestDto) {
-        OrderRequestDto orderRequestDto1 = orderService.createOrder(orderRequestDto);
-        return ResponseEntity.ok(orderRequestDto1);
+        OrderRequestDto orderResponse;
+
+        if (featuresEnableConfig.isEventDrivenOrderFlowEnabled()) {
+            orderService.reserveInventory(orderRequestDto);
+        } else {
+            orderResponse = orderService.createOrder(orderRequestDto);
+            return ResponseEntity.ok(orderResponse);
+        }
+        return ResponseEntity.ok(null);
     }
 
     @GetMapping
