@@ -96,8 +96,13 @@ GIT_REPO_TOKEN=your-read-token-for-the-config-repository
 ```
 
 `docker-compose.yml` consumes the first two values. The Config Server consumes
-`GIT_REPO_TOKEN` when it clones/reads its configured Git repository. Export it
-in the shell before starting the Config Server, for example:
+`GIT_REPO_TOKEN` when it clones/reads its configured Git repository. The token
+must be available to the Config Server process, but how it is supplied depends
+on how the service is started:
+
+- **IntelliJ IDEA:** configure the run configuration to load the repository's
+  `.env` file; IntelliJ passes its values to the application process.
+- **Terminal:** export the variable before starting the Config Server:
 
 ```bash
 export GIT_REPO_TOKEN='your-read-token-for-the-config-repository'
