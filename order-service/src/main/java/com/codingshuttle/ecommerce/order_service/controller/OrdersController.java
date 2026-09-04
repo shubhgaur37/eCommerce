@@ -1,6 +1,5 @@
 package com.codingshuttle.ecommerce.order_service.controller;
 
-import com.codingshuttle.ecommerce.order_service.clients.InventoryOpenFeignClient;
 import com.codingshuttle.ecommerce.order_service.config.FeaturesEnableConfig;
 import com.codingshuttle.ecommerce.order_service.dto.OrderRequestDto;
 import com.codingshuttle.ecommerce.order_service.service.OrdersService;
