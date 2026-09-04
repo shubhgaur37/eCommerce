@@ -1,16 +1,16 @@
-# E-commerce Microservices — Docker & Spring Cloud Learning Lab
+# Event-Driven E-commerce Application
 
-This repository is a hands-on learning project for a Spring Boot e-commerce
-system. It combines service discovery, centralized configuration, service to
-service calls, runtime configuration refresh, structured application logs, and
-an ELK observability stack running with Docker Compose.
+An event-driven Spring Boot e-commerce system built with Spring Cloud, Kafka,
+and Docker-based observability. It demonstrates synchronous and asynchronous
+order flows, centralized configuration, runtime feature toggles, tracing, and
+ELK log aggregation.
 
 ## What is in this repository
 
 | Area | Implementation | Purpose |
 | --- | --- | --- |
 | Service discovery | `discovery-service` (Eureka, port `8761`) | Lets services register and locate one another. |
-| Centralized configuration | `config-server` (port `8888`) | Serves configuration from the separate Git repository configured in `application.yml`. |
+| Centralized configuration | `config-server` (port `8888`) | Serves configuration from the separate [configuration repository](https://github.com/shubhgaur37/ecommerce-config-server). |
 | Edge service | `api-gateway` | Spring Cloud Gateway with logging and JWT-related filters. |
 | Business services | `inventory-service`, `order-service` | Inventory and order APIs, PostgreSQL/JPA support, and OpenFeign clients. |
 | Event messaging | Apache Kafka | Inventory publishes order-item events; order service consumes them in independent consumer groups. |
@@ -19,25 +19,26 @@ an ELK observability stack running with Docker Compose.
 
 ## Architecture at a glance
 
-```text
-                     Git configuration repository
-                               |
-                         Config Server :8888
-                               |
-                 +-------------+-------------+
-                 |                           |
-          API Gateway                    Application services
-                 |                    order-service / inventory-service
-                 |                           |
-                 +------ Eureka Discovery :8761
+```mermaid
+flowchart TB
+    configRepo["External configuration repository"] --> configServer["Config Server :8888"]
+    configServer --> gateway["API Gateway"]
+    configServer --> order["Order Service"]
+    configServer --> inventory["Inventory Service"]
 
-Spring Boot services -> ./logs/<service>/application-*.log
-                                      |
-                                  Logstash
-                                      |
-                            Elasticsearch :9200
-                                      |
-                                 Kibana :5601
+    discovery["Eureka Discovery :8761"] <--> gateway
+    discovery <--> order
+    discovery <--> inventory
+
+    gateway --> order
+    order -->|Synchronous inventory reservation| inventory
+    inventory -->|OrderConfirmedEvent| kafka[(Kafka)]
+    kafka -->|OrderConfirmedTopic| order
+
+    gateway --> logs["./logs/<service>/application-*.log"]
+    order --> logs
+    inventory --> logs
+    logs --> logstash["Logstash"] --> elasticsearch[(Elasticsearch :9200)] --> kibana["Kibana :5601"]
 ```
 
 The ELK containers communicate over the Compose `elk` network using service
@@ -162,8 +163,10 @@ not by the small bootstrap configuration stored here.
 ## Centralized configuration
 
 `config-server/src/main/resources/application.yml` enables Spring Cloud Config
-Server and points it at the `ecommerce-config-server` Git repository. Each
-config client identifies itself using `spring.application.name` and imports:
+Server and points it at the
+[`ecommerce-config-server`](https://github.com/shubhgaur37/ecommerce-config-server)
+Git repository. Each config client identifies itself using
+`spring.application.name` and imports:
 
 ```properties
 spring.config.import=configserver:http://localhost:8888
@@ -176,33 +179,77 @@ cannot resolve this required Config Server import.
 
 ## Kafka event messaging and tracing
 
-The inventory service publishes an event after it successfully reduces stock
-for an order. The order service has two listeners for that event: one logs the
-message in the `order-service-logger` group, and the other uses the default
-`order-service` group. Because these are different consumer groups, each group
-gets its own copy of every event; consumers within the *same* group would share
-partitions and therefore split the work.
+The `features.event_driven_order_flow.enabled` feature flag selects the order
+flow. When it is disabled, the order service synchronously reserves inventory
+and persists the order. When enabled, it requests inventory reservation first;
+after stock is reduced, inventory publishes an `OrderConfirmedEvent`, and the
+order service persists the order from `OrderConfirmedTopic`.
 
-```text
-inventory-service
-  reduce stock successfully
-          |
-          v
-KafkaTemplate -> OrderCreatedItemsTopic (3 partitions, replication factor 1)
-          |
-          +--> order-service-logger group -> application log
-          |
-          +--> order-service group        -> console + record metadata/headers
+```mermaid
+flowchart LR
+    request["POST /core/create-order"] --> flag{"Event-driven flow enabled?"}
+
+    flag -->|No| syncReserve["Order Service reserves inventory"]
+    syncReserve --> syncSave["Order Service saves confirmed order"]
+
+    flag -->|Yes| reserve["Order Service requests inventory reservation"]
+    reserve --> reduce["Inventory Service reduces stock"]
+    reduce --> event["Publish OrderConfirmedEvent"]
+    event --> topic[(OrderConfirmedTopic)]
+    topic --> listener["order-creation-consumer"]
+    listener --> asyncSave["Order Service saves confirmed order"]
 ```
 
-`KafkaConfig` declares `OrderCreatedItemsTopic` explicitly with three
-partitions. Explicit topic creation avoids depending on broker auto-creation;
-the single replica is appropriate only for the local single-broker setup.
-Topic names are configured properties, so publishers and consumers must use
-the same value. In this repository, inventory uses
-`kafka.topic.OrderCreatedItemsTopicName` and order uses
-`kafka.topic.OrderCreatedItemsTopic`; both currently resolve to
-`OrderCreatedItemsTopic`.
+The inventory service explicitly declares `OrderCreatedItemsTopic` and
+`OrderConfirmedTopic`, each with three partitions and a replication factor of
+one. Explicit topic creation avoids depending on broker auto-creation; one
+replica is appropriate only for the local single-broker setup. Topic names are
+externalized, so producer and consumer properties must resolve to the same
+topic name.
+
+`OrderCreatedItemsTopic` remains a simple string-message demonstration. The
+order service consumes it through two independent groups:
+
+- `order-service-logger` records the message in application logs.
+- `order-service` prints the message and record metadata for troubleshooting.
+
+Different consumer groups each receive a copy of a record. Consumers in the
+same group share partitions and divide the work.
+
+### JSON event contracts
+
+`OrderConfirmedEvent` is published with a `Long` key and JSON value. The
+producer uses `LongSerializer` and Spring Kafka's `JsonSerializer`; the order
+consumer uses the matching `LongDeserializer` and `JsonDeserializer`.
+
+```mermaid
+sequenceDiagram
+    participant I as Inventory Service
+    participant K as Kafka
+    participant O as Order Service
+
+    I->>K: OrderConfirmedEvent (Long key, JSON payload)
+    Note over K: Type metadata and trace headers travel with the record
+    K->>O: Deserialize JSON into OrderConfirmedEvent
+    O->>O: Map event, save confirmed order
+```
+
+Spring's JSON deserializer accepts type metadata only from trusted packages.
+The configuration trusts `com.codingshuttle.ecommerce.*` so the event can be
+deserialized. Keep this scope as narrow as practical; accepting arbitrary
+packages is unsafe. For a production system, move shared event contracts into
+a dedicated, versioned module rather than duplicating event classes across
+services.
+
+### Database and event consistency
+
+`KafkaTemplate.send()` is asynchronous: calling it does not prove that Kafka
+has accepted the event, and seeing a record only after the inventory method
+returns does not make the database update and Kafka publish atomic. A failed
+asynchronous publish after the stock transaction commits can leave stock
+reduced without an `OrderConfirmedEvent`. Use the outbox pattern in production:
+write the business update and an outbox record in one database transaction,
+then publish that record reliably in a separate step.
 
 ### Connecting to the local broker
 
@@ -250,34 +297,38 @@ rendering sensitive or non-text headers.
 
 ## Refresh scope: update configuration without a restart
 
-`OrdersController` and `FeaturesEnableConfig` are annotated with
-`@RefreshScope`. They use these externally supplied properties:
+`FeaturesEnableConfig` and `ProductService` are annotated with `@RefreshScope`.
+The controller reads the refresh-scoped configuration bean, so it does not need
+its own `@RefreshScope` annotation. The feature flag and sample variable are
+externally supplied properties:
 
 ```properties
 my.variable=...
-features.user-tracking-enabled=...
+features.event_driven_order_flow.enabled=false
 ```
 
-The `/core/helloOrders` endpoint reflects the current values. To test a
-refresh:
+The `/core/helloOrders` endpoint reflects the current values. The same flag
+must be refreshed consistently in order and inventory services: order uses it
+to choose the request path, while inventory uses it to decide whether to emit
+`OrderConfirmedEvent`. To test a refresh:
 
-1. Change and push the relevant `order-service` configuration in the external
-   configuration Git repository.
-2. Ensure the order service exposes the Spring Boot Actuator refresh endpoint
+1. Change and push the relevant service configuration in the
+   [external configuration repository](https://github.com/shubhgaur37/ecommerce-config-server).
+2. Ensure the affected service exposes the Spring Boot Actuator refresh endpoint
    (typically `management.endpoints.web.exposure.include=refresh`).
-3. Trigger the refresh on the running order service:
+3. Trigger the refresh on each affected running service:
 
    ```bash
    curl -X POST http://localhost:<order-service-port>/actuator/refresh
+   curl -X POST http://localhost:<inventory-service-port>/actuator/refresh
    ```
 
-4. Call `GET /core/helloOrders` again. The refreshed `my.variable` and feature
-   flag are used without restarting the service.
+4. Call `GET /core/helloOrders` again. The refreshed `my.variable` and
+   feature flag are used without restarting the service.
 
-`@RefreshScope` is important: it causes Spring to recreate the scoped bean on
-refresh, so injected `@Value` properties do not remain stale. The exact order
-service port is externalized and should be taken from the configuration
-repository or the service startup log.
+`@RefreshScope` recreates the scoped bean on refresh, so its injected `@Value`
+properties do not remain stale. The service ports are externalized and should
+be taken from the configuration repository or service startup logs.
 
 ## API Gateway configuration and filters
 
