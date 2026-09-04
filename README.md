@@ -52,11 +52,11 @@ flowchart LR
 The request and event paths are shown separately below, keeping service setup
 and runtime behavior easy to follow.
 
-### Log aggregation
+### Log aggregation and Observability
 
 ```mermaid
 flowchart LR
-    services["Spring Boot services"] --> logs["./logs/<service>/application-*.log"]
+    services["Spring Boot services"] --> logs["/logs/*/application-*.log"]
     logs --> logstash["Logstash"]
     logstash --> elasticsearch[("Elasticsearch :9200")]
     elasticsearch --> kibana["Kibana :5601"]
@@ -65,6 +65,17 @@ flowchart LR
 The ELK containers communicate over the Compose `elk` network using service
 names such as `elasticsearch`; `localhost` is only for access from your host
 machine.
+
+To view application logs in Kibana, create a data view that matches the
+Elasticsearch index configured in [`elk-config/logstash.conf`](elk-config/logstash.conf):
+
+```text
+ecommerce-spring-boot-logs-*
+```
+
+Logstash creates daily indexes using the pattern
+`ecommerce-spring-boot-logs-%{+YYYY.MM.dd}`. After creating the data view,
+open **Discover** in Kibana to search the aggregated service logs.
 
 ## Prerequisites
 
