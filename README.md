@@ -7,15 +7,15 @@ ELK log aggregation.
 
 ## What is in this repository
 
-| Area | Implementation | Purpose |
-| --- | --- | --- |
-| Service discovery | `discovery-service` (Eureka, port `8761`) | Lets services register and locate one another. |
-| Centralized configuration | `config-server` (port `8888`) | Serves configuration from the separate [configuration repository](https://github.com/shubhgaur37/ecommerce-config-server). |
-| Edge service | `api-gateway` | Spring Cloud Gateway with logging and JWT-related filters. |
-| Business services | `inventory-service`, `order-service` | Inventory and order APIs, PostgreSQL/JPA support, and OpenFeign clients. |
-| Event messaging | Apache Kafka | Inventory publishes order-item events; order service consumes them in independent consumer groups. |
-| Distributed tracing | Micrometer Observation, Brave, Zipkin reporter dependencies | Propagates trace context across HTTP and Kafka when observation is enabled. |
-| Log aggregation | Elasticsearch, Logstash, Kibana | Reads local service log files and makes them searchable in Kibana. |
+| Area                      | Implementation                                              | Purpose                                                                                                                    |
+|---------------------------|-------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|
+| Service discovery         | `discovery-service` (Eureka, port `8761`)                   | Lets services register and locate one another.                                                                             |
+| Centralized configuration | `config-server` (port `8888`)                               | Serves configuration from the separate [configuration repository](https://github.com/shubhgaur37/ecommerce-config-server). |
+| Edge service              | `api-gateway`                                               | Spring Cloud Gateway with logging and JWT-related filters.                                                                 |
+| Business services         | `inventory-service`, `order-service`                        | Inventory and order APIs, PostgreSQL/JPA support, and OpenFeign clients.                                                   |
+| Event messaging           | Apache Kafka                                                | Inventory publishes order-item events; order service consumes them in independent consumer groups.                         |
+| Distributed tracing       | Micrometer Observation, Brave, Zipkin reporter dependencies | Propagates trace context across HTTP and Kafka when observation is enabled.                                                |
+| Log aggregation           | Elasticsearch, Logstash, Kibana                             | Reads local service log files and makes them searchable in Kibana.                                                         |
 
 ## Architecture at a glance
 
@@ -358,12 +358,12 @@ its application name and Config Server import; routes, JWT settings, and
 environment-specific gateway configuration are expected in the external
 configuration repository.
 
-| Component | Scope | Current behavior |
-| --- | --- | --- |
-| `GlobalLoggingFilter` | Every gateway request | Logs the request URI before routing and the response status after completion. Its order is `5`. |
-| `LoggingOrdersFilter` | A route that declares `LoggingOrders` | Logs the request URI before forwarding. |
+| Component                            | Scope                                  | Current behavior                                                                                                                                                                                 |
+|--------------------------------------|----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GlobalLoggingFilter`                | Every gateway request                  | Logs the request URI before routing and the response status after completion. Its order is `5`.                                                                                                  |
+| `LoggingOrdersFilter`                | A route that declares `LoggingOrders`  | Logs the request URI before forwarding.                                                                                                                                                          |
 | `AuthenticationGatewayFilterFactory` | A route that declares `Authentication` | When `enabled`, requires an `Authorization: Bearer <JWT>` header, validates it with `jwt.secretKey`, and adds `X-User-Id` to the forwarded request. A missing header returns `401 Unauthorized`. |
-| `OrdersService` circuit breaker | Order-to-inventory Feign call | The active `inventoryCircuitBreaker` invokes `createOrderFallback` when the inventory call fails. |
+| `OrdersService` circuit breaker      | Order-to-inventory Feign call          | The active `inventoryCircuitBreaker` invokes `createOrderFallback` when the inventory call fails.                                                                                                |
 
 Here is a representative gateway configuration to place in the external
 `api-gateway` configuration. Filter names are derived from the factory class
