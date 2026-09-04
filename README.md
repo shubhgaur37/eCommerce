@@ -23,8 +23,13 @@ ELK log aggregation.
 flowchart LR
     configRepo["External configuration repository"] --> configServer["Config Server :8888"]
 
-    subgraph applications["Application services"]
+    subgraph platform["Central platform"]
+        direction TB
         gateway["API Gateway"]
+        discovery["Eureka Discovery :8761"]
+    end
+
+    subgraph applications["Business services"]
         order["Order Service"]
         inventory["Inventory Service"]
     end
@@ -33,9 +38,15 @@ flowchart LR
     configServer --> order
     configServer --> inventory
 
-    discovery["Eureka Discovery :8761"] -. service registration .-> gateway
-    discovery -. service registration .-> order
-    discovery -. service registration .-> inventory
+    gateway <--> order
+    gateway <--> inventory
+    discovery <--> gateway
+    discovery <--> order
+    discovery <--> inventory
+
+    kafka[(Kafka)]
+    inventory -->|OrderConfirmedEvent| kafka
+    kafka -->|OrderConfirmedTopic| order
 ```
 
 The request and event paths are shown separately below, keeping service setup
