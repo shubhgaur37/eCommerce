@@ -1,5 +1,3 @@
-name: ecommerce
-
 services:
 
   # Elasticsearch stores and indexes application logs.
@@ -15,7 +13,8 @@ services:
     environment:
       # Run Elasticsearch as a single-node cluster.
       - discovery.type=single-node
-
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
       # Password for the built-in "elastic" superuser.
       #
       # This value can also be supplied using:
@@ -24,6 +23,12 @@ services:
       # The value is read from the shell environment first, and then
       # from the .env file if it is not available in the shell.
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+
+      # Reduce Elasticsearch JVM heap for local development.
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+
+    # Limit total container memory.
+    mem_limit: 1g
 
     volumes:
       # Docker-managed volume used to persist Elasticsearch data.
@@ -81,42 +86,51 @@ services:
       - -c
       - |
         echo "Setup container started"
-        
+    
         # Wait until Elasticsearch is available.
         #
-        # Elasticsearch 9.x is using HTTPS with a self-signed certificate.
+        # Elasticsearch security is enabled, but HTTP TLS is explicitly
+        # disabled in docker-compose.elk.yml using:
         #
-        # "-k" tells curl to skip SSL certificate verification.
+        # xpack.security.http.ssl.enabled=false
+        #
+        # Therefore the setup container connects to Elasticsearch using HTTP.
         #
         # "elasticsearch" is the Docker Compose service name.
-        # Docker resolves this name to the Elasticsearch container
-        # because both containers are on the same network.
-        until curl -s -k \
+        # Docker resolves this name to the Elasticsearch container because
+        # both containers are on the same Docker network.
+        #
+        # The elastic superuser credentials are required because
+        # Elasticsearch authentication is enabled.
+        until curl -s \
           -u elastic:$${ELASTIC_PASSWORD} \
-          https://elasticsearch:9200 \
+          http://elasticsearch:9200 \
           | grep -q "cluster_name";
         do
           echo "Waiting for Elasticsearch..."
           sleep 5
         done
-        
+    
         echo "Elasticsearch is ready"
-        
+    
         # Set the password for the built-in "kibana_system" user.
         #
-        # The "elastic" user is used here because it has administrative
-        # privileges required to update another user's password.
-        until curl -s -k -X POST \
+        # The "elastic" user is used because it has the administrative
+        # privileges required to update another built-in user's password.
+        #
+        # Kibana later uses the kibana_system account to authenticate
+        # with Elasticsearch.
+        until curl -s -X POST \
           -u elastic:$${ELASTIC_PASSWORD} \
           -H "Content-Type: application/json" \
-          https://elasticsearch:9200/_security/user/kibana_system/_password \
+          http://elasticsearch:9200/_security/user/kibana_system/_password \
           -d "{\"password\":\"$${KIBANA_PASSWORD}\"}" \
           | grep -q "^{}";
         do
           echo "Retrying Kibana password setup..."
           sleep 5
         done
-        
+    
         echo "Kibana system password configured"
 
 
@@ -143,7 +157,7 @@ services:
       #
       # Logstash can read the configuration but cannot modify the
       # file on the host machine.
-      - ./elk-config/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      - ./infrastructure_config/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
 
       # Bind mount the application logs.
       #
@@ -193,7 +207,7 @@ services:
       # Port 9200 is Elasticsearch's internal container port.
       # This is different from accessing Elasticsearch from the host,
       # where https://localhost:9200 uses Docker port publishing.
-      - ELASTICSEARCH_HOSTS=https://elasticsearch:9200
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
 
       # Kibana must use the built-in kibana_system user for its
       # internal connection to Elasticsearch.
@@ -207,10 +221,6 @@ services:
 
       # Password configured by the setup container.
       - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
-
-      # Elasticsearch uses a self-signed certificate.
-      # Disable certificate verification for this local development setup.
-      - ELASTICSEARCH_SSL_VERIFICATIONMODE=none
 
     ports:
       # Host port : Container port
