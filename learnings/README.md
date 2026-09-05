@@ -834,18 +834,5 @@ and full-stack observability. The most important next production steps are:
 
 1. Add an event/order identifier and make the consumer idempotent.
 2. Replace the database-plus-Kafka dual write with a transactional outbox.
-3. Add retry, dead-letter, and poison-event handling policies.
-4. Publish one versioned Avro contract artifact or generate both services from
-   one authoritative schema source.
-5. Generate Avro sources under `target/generated-sources/avro` instead of
-   committing generated Java files.
-6. Add integration tests with PostgreSQL, Kafka, and Schema Registry, including
-   schema-compatibility and duplicate-delivery cases.
-7. Replace local credentials and relaxed TLS settings with managed secrets and
-   verified certificates.
-8. Remove machine-specific Compose paths and make all local infrastructure
-   portable.
-9. Add durable database migrations and avoid `create-drop` outside disposable
-   environments.
-10. Define service-level authorization and prevent direct clients from
-    spoofing gateway-provided identity headers.
+3. Introduce a saga pattern as the workflow expands across more services and
+   Kafka topics, including compensating events for partially completed steps.
