@@ -7,7 +7,7 @@ spring:
       server:
         git:
           uri: https://github.com/shubhgaur37/ecommerce-config-server
-          username: shubhgaur37
+          username: ${GIT_USERNAME}
           password: ${GIT_REPO_TOKEN}
           default-label: main
 
