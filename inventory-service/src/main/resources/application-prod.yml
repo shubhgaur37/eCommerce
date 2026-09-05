@@ -1,0 +1,9 @@
+spring:
+  config:
+    import: configserver:http://config-server:8888
+
+  kafka:
+    bootstrap-servers: broker:9092
+    producer:
+      properties:
+        schema.registry.url: http://schema-registry:8081

@@ -1,0 +1,13 @@
+logging:
+  level:
+    root: INFO
+    io.kafbat.ui: DEBUG
+
+spring:
+  jmx:
+    enabled: true
+
+kafka:
+  clusters:
+    - name: local
+      bootstrapServers: broker:9092
