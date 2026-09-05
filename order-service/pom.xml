@@ -30,6 +30,14 @@
 		<java.version>21</java.version>
 		<spring-cloud.version>2023.0.3</spring-cloud.version>
 	</properties>
+
+	<repositories>
+		<repository>
+			<id>confluent</id>
+			<url>https://packages.confluent.io/maven/</url>
+		</repository>
+	</repositories>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -103,6 +111,49 @@
 			<artifactId>spring-kafka</artifactId>
 			<version>3.3.4</version>
 		</dependency>
+
+		<!-- Confluent Schema Registry Client -->
+		<dependency>
+			<groupId>io.confluent</groupId>
+			<artifactId>kafka-schema-registry-client</artifactId>
+			<version>7.7.11</version>
+		</dependency>
+
+		<!-- Confluent Avro Serializer -->
+		<dependency>
+			<groupId>io.confluent</groupId>
+			<artifactId>kafka-avro-serializer</artifactId>
+			<version>7.7.11</version>
+		</dependency>
+				<!--
+		Avro version note:
+
+		Avro 1.12.2 introduced a breaking Java security change.
+
+		In 1.12.2, Avro restricts arbitrary Java classes from being instantiated
+		through SpecificDatumReader or schema java-class attributes. Generated
+		SpecificRecord classes can therefore fail with:
+
+			java.lang.SecurityException:
+			Forbidden com.codingshuttle.ecommerce.events.OrderConfirmedEvent!
+
+		The application must explicitly trust allowed classes/packages using:
+
+			org.apache.avro.SERIALIZABLE_CLASSES
+		or
+			org.apache.avro.SERIALIZABLE_PACKAGES
+
+		For this learning project, Avro 1.12.1 is used to avoid this additional
+		class-security configuration.
+
+		Keep the Avro runtime dependency and avro-maven-plugin versions aligned.
+		-->
+		<!-- Apache Avro -->
+		<dependency>
+			<groupId>org.apache.avro</groupId>
+			<artifactId>avro</artifactId>
+			<version>1.12.1</version> <!-- Match the version supported by your Confluent package -->
+		</dependency>
 	</dependencies>
 
 	<dependencyManagement>
@@ -129,6 +180,140 @@
 							<artifactId>lombok</artifactId>
 						</exclude>
 					</excludes>
+				</configuration>
+			</plugin>
+			<!--
+            Avro generation and compile-phase issues encountered:
+
+            1. OrderConfirmedEvent was not found during compilation.
+
+               Root cause:
+               The Avro Maven plugin was initially missing from the order-service pom.xml.
+               Therefore, Maven had no goal bound to generate-sources that would convert
+               the .avsc schema into Java classes before the compile phase.
+
+               Fix:
+               Added avro-maven-plugin and bound its "schema" goal to generate-sources.
+
+               Maven flow:
+                   mvn compile / mvn install
+                           ↓
+                   generate-sources
+                           ↓
+                   avro:schema
+                           ↓
+                   generated Java classes
+                           ↓
+                   compile
+
+
+            2. OrderConfirmedEvent was generated but still showed:
+                   cannot find symbol: class OrderConfirmedEvent
+
+               Root cause:
+               The generated class was in:
+                   com.codingshuttle.ecommerce.events
+
+               while OrdersService was in:
+                   com.codingshuttle.ecommerce.order_service.service
+
+               These are different Java packages. Java does not automatically resolve
+               classes from another package just because the class exists.
+
+               Fix:
+               Explicitly import the generated class:
+
+                   import com.codingshuttle.ecommerce.events.OrderConfirmedEvent;
+
+               Maven is responsible for generating/compiling the class, but Maven does
+               not modify handwritten Java source to add imports. IntelliJ can suggest
+               or automatically add imports, but that is an IDE feature.
+
+
+            3. Generated Avro source failed with:
+                   cannot find symbol: class JsonSchemaParser
+                   location: package org.apache.avro
+
+               Root cause:
+               The generated Avro source referenced an Avro API that was not available
+               in the Avro library being used on the compile classpath. This indicates
+               that the generated code and Avro runtime dependency versions were not
+               compatible/aligned.
+
+               Fix:
+               Keep the avro-maven-plugin version and Avro runtime dependency version
+               aligned, remove stale generated classes, and regenerate them.
+
+
+            4. Cleaner approach for generated Avro classes:
+
+               Initially, generated classes were written directly into:
+
+                   src/main/java
+
+               This works, but mixes generated code with handwritten application code.
+               It also means generated files can accidentally remain in the source tree
+               and become stale.
+
+               Cleaner approach:
+               Generate Avro classes into Maven's build directory:
+
+                   target/generated-sources/avro
+
+               Benefits:
+               - src/main/java contains only handwritten source code.
+               - Generated code is clearly separated from application code.
+               - "mvn clean" removes old generated classes automatically because it
+                 deletes the target directory.
+               - Every build can regenerate classes from the .avsc schemas.
+               - Generated files normally do not need to be committed to source control.
+
+               Flow:
+
+                   src/main/resources/avro/*.avsc
+                                ↓
+                         generate-sources
+                                ↓
+                          avro:schema
+                                ↓
+                   target/generated-sources/avro
+                                ↓
+                             compile
+
+               The generated class still belongs to the package defined by the Avro
+               schema's "namespace", so handwritten classes in another package must
+               still explicitly import it.
+            -->
+
+			<plugin>
+				<groupId>org.apache.avro</groupId>
+				<artifactId>avro-maven-plugin</artifactId>
+				<version>1.12.1</version>
+
+				<executions>
+					<execution>
+						<!-- Generate Avro Java classes before the Java compile phase -->
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>schema</goal>
+						</goals>
+					</execution>
+				</executions>
+
+				<configuration>
+					<!-- Directory containing our .avsc schema definitions -->
+					<sourceDirectory>
+						${project.basedir}/src/main/resources/avro
+					</sourceDirectory>
+
+					<!--
+                    Keep generated Avro classes inside Maven's build directory instead
+                    of src/main/java. "mvn clean" removes target, preventing stale
+                    generated classes from remaining in the application source tree.
+                    -->
+					<outputDirectory>
+						${project.basedir}/src/main/java
+					</outputDirectory>
 				</configuration>
 			</plugin>
 		</plugins>

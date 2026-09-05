@@ -1,0 +1,44 @@
+{
+  "type": "record",
+  "name": "OrderConfirmedEvent",
+  "namespace": "com.codingshuttle.ecommerce.events",
+  "doc": "Event published after inventory has been successfully reduced.",
+
+  "fields": [
+    {
+      "name": "items",
+      "type": {
+        "type": "array",
+
+        "items": {
+          "type": "record",
+          "name": "OrderRequestItem",
+          "doc": "Represents an individual product included in the confirmed order.",
+
+          "fields": [
+            {
+              "name": "productId",
+              "type": "long"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "quantity",
+              "type": "int"
+            }
+          ]
+        }
+      },
+
+      "doc": "Avro arrays require type=array and items to specify the type of each element. Here, each element is an OrderRequestItem record."
+    },
+
+    {
+      "name": "totalPrice",
+      "type": "double",
+      "doc": "Total price of all items in the confirmed order."
+    }
+  ]
+}

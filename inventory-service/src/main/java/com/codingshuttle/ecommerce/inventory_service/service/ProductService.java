@@ -1,10 +1,10 @@
 package com.codingshuttle.ecommerce.inventory_service.service;
 
+import com.codingshuttle.ecommerce.events.OrderConfirmedEvent;
 import com.codingshuttle.ecommerce.inventory_service.dto.OrderRequestDto;
 import com.codingshuttle.ecommerce.inventory_service.dto.OrderRequestItemDto;
 import com.codingshuttle.ecommerce.inventory_service.dto.ProductDto;
 import com.codingshuttle.ecommerce.inventory_service.entity.Product;
-import com.codingshuttle.ecommerce.inventory_service.events.OrderConfirmedEvent;
 import com.codingshuttle.ecommerce.inventory_service.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.IntStream;
 
 @Service
 @Slf4j
@@ -33,7 +34,7 @@ public class ProductService {
 
     // key and value type for the message
     private final KafkaTemplate<String,String> kafkaTemplate;
-    private final KafkaTemplate<Long,OrderConfirmedEvent> kafkaTemplateOrderConfirmed;
+    private final KafkaTemplate<Long, OrderConfirmedEvent> kafkaTemplateOrderConfirmed;
 
     // kafka topic to publish message
     @Value("${kafka.topic.OrderCreatedItemsTopicName}")
@@ -80,6 +81,10 @@ public class ProductService {
         }
         if (eventDrivenFlowEnabled){
             OrderConfirmedEvent orderConfirmedEvent = modelMapper.map(orderRequestDto, OrderConfirmedEvent.class);
+
+            IntStream.range(0, productNames.size())
+                    .forEach(i -> orderConfirmedEvent.getItems().get(i).setName(productNames.get(i)));
+
             orderConfirmedEvent.setTotalPrice(totalPrice);
             sendOrderConfirmedMessage(orderConfirmedEvent);
         }

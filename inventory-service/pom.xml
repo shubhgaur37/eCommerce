@@ -30,6 +30,14 @@
 		<java.version>21</java.version>
 		<spring-cloud.version>2023.0.3</spring-cloud.version>
 	</properties>
+<!--	Adding Confluent repository to resolve avro dependencies -->
+	<repositories>
+		<repository>
+			<id>confluent</id>
+			<url>https://packages.confluent.io/maven/</url>
+		</repository>
+	</repositories>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -43,7 +51,6 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-web</artifactId>
 		</dependency>
-
 		<dependency>
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
@@ -97,6 +104,39 @@
 			<artifactId>spring-kafka</artifactId>
 			<version>3.3.4</version>
 		</dependency>
+<!--		Dependencies for Schema Registry and Avro	-->
+
+				<!--
+		Confluent serializer version should be aligned with the Kafka client version
+		used by Spring Kafka. Spring Kafka 3.3.4 currently provides Kafka client 3.7.x,
+		so Confluent 7.7.x is used instead of 8.3.x.
+
+		Using Confluent 8.3.x with Kafka client 3.7.x caused a ClassNotFoundException
+		for org.apache.kafka.common.metrics.Monitorable because Confluent 8.3.x
+		expects the newer Kafka 4.3.x client API.
+		-->
+
+		<!-- Confluent Schema Registry Client -->
+		<dependency>
+			<groupId>io.confluent</groupId>
+			<artifactId>kafka-schema-registry-client</artifactId>
+			<version>7.7.11</version>
+		</dependency>
+
+		<!-- Confluent Avro Serializer -->
+		<dependency>
+			<groupId>io.confluent</groupId>
+			<artifactId>kafka-avro-serializer</artifactId>
+			<version>7.7.11</version>
+		</dependency>
+
+		<!-- Apache Avro -->
+		<dependency>
+			<groupId>org.apache.avro</groupId>
+			<artifactId>avro</artifactId>
+			<version>1.12.1</version> <!-- Match the version supported by your Confluent package -->
+		</dependency>
+
 	</dependencies>
 	<dependencyManagement>
 		<dependencies>
@@ -122,6 +162,31 @@
 							<artifactId>lombok</artifactId>
 						</exclude>
 					</excludes>
+				</configuration>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.avro</groupId>
+				<artifactId>avro-maven-plugin</artifactId>
+				<version>1.12.1</version>
+
+				<executions>
+					<execution>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>schema</goal>
+						</goals>
+					</execution>
+				</executions>
+
+				<configuration>
+					<sourceDirectory>
+						${project.basedir}/src/main/resources/avro
+					</sourceDirectory>
+
+					<outputDirectory>
+						${project.basedir}/src/main/java
+					</outputDirectory>
 				</configuration>
 			</plugin>
 		</plugins>

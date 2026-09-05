@@ -1,11 +1,11 @@
 package com.codingshuttle.ecommerce.order_service.service;
 
+import com.codingshuttle.ecommerce.events.OrderConfirmedEvent;
 import com.codingshuttle.ecommerce.order_service.clients.InventoryOpenFeignClient;
 import com.codingshuttle.ecommerce.order_service.dto.OrderRequestDto;
 import com.codingshuttle.ecommerce.order_service.entity.OrderItem;
 import com.codingshuttle.ecommerce.order_service.entity.OrderStatus;
 import com.codingshuttle.ecommerce.order_service.entity.Orders;
-import com.codingshuttle.ecommerce.inventory_service.events.OrderConfirmedEvent;
 import com.codingshuttle.ecommerce.order_service.repoitory.OrdersRepository;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.RequiredArgsConstructor;
@@ -66,14 +66,18 @@ public class OrdersService {
     public void createOrderFromInventoryReductionEvent(OrderConfirmedEvent orderConfirmedEvent){
         Orders orders = modelMapper.map(orderConfirmedEvent, Orders.class);
         for(OrderItem orderItem: orders.getItems()) {
+            // ModelMapper implicitly maps productId to id because of similar property names
+            // and compatible Long types. Reset it so Hibernate can generate the primary key.
+            orderItem.setId(null);
+
+            // Set the owning side of the Orders-OrderItem relationship.
             orderItem.setOrder(orders);
         }
         orders.setTotalPrice(orderConfirmedEvent.getTotalPrice());
         orders.setOrderStatus(OrderStatus.CONFIRMED);
 
-        Orders savedOrder = orderRepository.save(orders);
-        OrderRequestDto savedOrderResponse = modelMapper.map(savedOrder, OrderRequestDto.class);
-        log.info("Order Created From Event: {}",savedOrderResponse);
+        orderRepository.save(orders);
+        log.info("Order Created From Event: {}",orderConfirmedEvent);
     }
 
     public OrderRequestDto createOrderFallback(OrderRequestDto orderRequestDto, Throwable throwable) {
