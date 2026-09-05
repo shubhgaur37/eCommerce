@@ -660,14 +660,62 @@ spring.kafka.consumer.properties.schema.registry.url=http://localhost:8081
 spring.kafka.consumer.properties.specific.avro.reader=true
 ```
 
-Current JPA mapping correction in `OrdersService`:
+Current mapping correction in `OrdersService`:
+
+ModelMapper caused the ID issue. Its implicit matching treated the source
+event's `productId` as a match for the destination entity's `id` because the
+names are similar and both values are compatible `Long` types. That copied a
+product identifier into `OrderItem.id`, which is a separate JPA-generated
+primary key. Setting it back to `null` lets Hibernate generate the correct row
+identifier. The `setOrder(orders)` call solves a different problem: it sets the
+owning side of the bidirectional JPA relationship.
 
 ```java
 for (OrderItem item : orders.getItems()) {
-    item.setId(null);       // do not reuse productId as the entity primary key
-    item.setOrder(orders);  // establish the owning relationship
+    item.setId(null);       // undo ModelMapper's productId -> id mapping
+    item.setOrder(orders);  // establish the JPA owning relationship
 }
 ```
+
+A cleaner long-term fix is to configure ModelMapper to skip the entity ID
+instead of repairing it after every mapping:
+
+```java
+modelMapper.typeMap(OrderRequestItem.class, OrderItem.class)
+    .addMappings(mapper -> mapper.skip(OrderItem::setId));
+```
+
+MapStruct could also have prevented this accidental detached-entity issue and
+would be a stronger fit when mapping event contracts into JPA entities.
+MapStruct generates mapping code at compile time and normally requires an
+explicit rule when source and destination property names differ. Therefore,
+`productId` would not ordinarily be mapped into `id` merely because the names
+look similar. The intent can be made unambiguous:
+
+```java
+@Mapper(componentModel = "spring")
+public interface OrderMapper {
+
+    @Mapping(target = "id", ignore = true)
+    @Mapping(target = "order", ignore = true)
+    OrderItem toEntity(OrderRequestItem item);
+
+    Orders toEntity(OrderConfirmedEvent event);
+
+    @AfterMapping
+    default void connectItems(@MappingTarget Orders order) {
+        order.getItems().forEach(item -> item.setOrder(order));
+    }
+}
+```
+
+Ignoring `id` leaves the new entity transient so Hibernate can generate its
+primary key. The `@AfterMapping` method establishes the owning side of the JPA
+relationship. MapStruct does not inherently understand Hibernate entity
+states, however: an explicit `productId -> id` mapping could still recreate
+the same problem. Its advantage here is deterministic, reviewable,
+compile-time-generated mapping instead of ModelMapper's runtime name
+heuristics.
 
 ## Cross-cutting conclusions and next steps
 
