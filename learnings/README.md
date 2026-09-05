@@ -117,7 +117,7 @@ Key learnings:
 - Disabling certificate verification is a local-development concession. A
   production pipeline should trust and verify the correct certificate chain.
 
-Current reference: `elk-config/logstash.conf`.
+At this stage, the pipeline in `elk-config/logstash.conf` used:
 
 ```conf
 input {
@@ -135,8 +135,11 @@ output {
 }
 ```
 
-The last setting is intentionally local-only; certificate verification should
-be enabled with the appropriate CA in a deployed environment.
+This HTTPS/self-signed configuration records the behavior at these commits. A
+later production-preparation commit moved the file to
+`infrastructure_config/logstash.conf`, kept Elasticsearch authentication
+enabled, and deliberately changed its internal HTTP endpoint; that current
+state is documented in Phase 4.
 
 ### Compose environment and ELK orchestration (`075965f`, `249324f`, `89155c4`)
 
@@ -179,22 +182,19 @@ setup:
 The setup command adds its own `curl` loop because `service_started` alone does
 not mean Elasticsearch is ready to accept authenticated API calls.
 
-After the stack starts, Kibana is available at
-`http://localhost:5601`. Elasticsearch is exposed to the host over HTTPS at
-`https://localhost:9200`. The local Elasticsearch container generates a
-self-signed certificate, so a direct command-line check must either trust that
-certificate explicitly or use `-k` for this local environment:
+At this stage, Elasticsearch was exposed to the host over HTTPS with a
+self-signed certificate. A direct local check therefore used:
 
 ```bash
 curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200
 ```
 
-The `-k` flag disables certificate verification. It is useful for this local
-learning stack but should not become a production default; deployed clients
-should validate Elasticsearch's certificate using the correct CA.
+The `-k` flag disables certificate verification and should not become a
+production default. The later ELK update switched the current Compose endpoint
+to authenticated HTTP, so the present-day check no longer uses `-k` or
+`https://`.
 
-The local ELK endpoints are Kibana on `5601` and Elasticsearch on `9200`.
-They are started from the repository root with:
+The ELK stack was started from the repository root with:
 
 ```bash
 docker compose up -d
@@ -825,6 +825,212 @@ states, however: an explicit `productId -> id` mapping could still recreate
 the same problem. Its advantage here is deterministic, reviewable,
 compile-time-generated mapping instead of ModelMapper's runtime name
 heuristics.
+
+## Phase 4 — Containerizing the production-profile deployment
+
+### Adding environment-specific service configuration (`21edcc9`)
+
+Production profile files were added for order and inventory. The important
+distinction is network identity: a host-run application reaches dependencies
+through `localhost` and published ports, while a container reaches other
+Compose services through their service names and container ports.
+
+For example, the inventory production profile overrides Kafka and Schema
+Registry without duplicating the common application configuration:
+
+```yaml
+spring:
+  kafka:
+    bootstrap-servers: broker:9092
+    producer:
+      properties:
+        schema.registry.url: http://schema-registry:8081
+```
+
+The matching external configuration repository now provides:
+
+- `application-prod.properties` for Docker-network Eureka and Zipkin URLs.
+- `inventory-service-prod.properties` for the `product-db` connection.
+- `order-service-prod.properties` for the `orders-db` connection.
+
+Spring combines the default and `prod` property sources. Shared values remain
+in the default files; only environment-dependent addresses need production
+overrides.
+
+### Reusing Compose's default network (`b51db33`)
+
+The standalone ELK definition was moved to `docker-compose.elk.yml`, and its
+explicit custom network was removed. Compose automatically creates a project
+network and connects services to it unless configured otherwise.
+
+Key learning: an explicit network is useful when isolation, a stable external
+network, or custom networking settings are required. For one composed
+application, the default network is simpler and still provides DNS resolution
+by service name. This also allows services from the root Compose file and its
+included Kafka/ELK files to communicate on the same project network.
+
+### Keeping infrastructure configuration together (`b64cfaf`)
+
+The Logstash pipeline moved from `elk-config/` to
+`infrastructure_config/logstash.conf`, alongside the Kafbat configuration.
+The Compose bind mount was updated to match.
+
+Key learning: bind-mounted configuration is resolved from the host path in the
+Compose file. Moving a file without updating the mount causes the container to
+start with a missing file, an empty directory mount, or its image defaults.
+
+### Externalizing Config Server Git credentials (`b0ae9a5`)
+
+The Config Server now receives both Git credentials from its environment:
+
+```yaml
+username: ${GIT_USERNAME}
+password: ${GIT_REPO_TOKEN}
+```
+
+This removed machine-specific identity from application configuration. The
+values are supplied to the container by the root Compose file and should come
+from the deployment environment or an untracked local `.env` file.
+
+### Resolving Config Server correctly in both environments (`abd9cb7`)
+
+Config Data imports are processed early in Spring Boot startup. Defining one
+Config Server import in the default file and another in a production profile
+caused the application to process an unwanted `localhost:8888` location inside
+the container. Inside a container, `localhost` points back to that same
+container—not to the Config Server service.
+
+The fix was one import with an environment override and a local fallback:
+
+```properties
+spring.config.import=configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+```
+
+For Docker, Compose supplies:
+
+```yaml
+environment:
+  CONFIG_SERVER_URL: http://config-server:8888
+```
+
+For a host-run application, the variable can be omitted and the expression
+falls back to `http://localhost:8888`. This keeps a single Config Data import
+and varies only its address.
+
+### Updating ELK security and resource usage (`eba3475`)
+
+Elasticsearch authentication remains enabled, but HTTP TLS is now explicitly
+disabled for this Compose environment. Logstash, Kibana, and the setup job
+therefore use `http://elasticsearch:9200` while still authenticating with
+credentials.
+
+```yaml
+environment:
+  - xpack.security.enabled=true
+  - xpack.security.http.ssl.enabled=false
+  - ES_JAVA_OPTS=-Xms512m -Xmx512m
+mem_limit: 1g
+```
+
+Current host check:
+
+```bash
+curl -u "elastic:$ELASTIC_PASSWORD" http://localhost:9200
+```
+
+This is different from the earlier self-signed HTTPS setup. Authentication and
+transport encryption are separate controls: enabling security does not require
+disabling TLS, and a real production deployment should normally use both
+authentication and verified TLS. The heap and container memory limits make
+the learning stack less resource-intensive but must be sized from workload
+measurements in a real environment.
+
+### Adding application Dockerfiles (`6b51bf7`)
+
+Each Spring application gained a Dockerfile based on Maven and JDK 21. The
+build copies Maven metadata first, resolves dependencies in a cacheable layer,
+then copies the source:
+
+```dockerfile
+FROM maven:3.9.6-eclipse-temurin-21
+WORKDIR /app
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+RUN ./mvnw dependency:go-offline
+COPY src ./src
+CMD ["./mvnw", "spring-boot:run"]
+```
+
+The cache boundary avoids downloading every dependency again when only source
+code changes. This is suitable for demonstrating containerized services, but a
+production-optimized image would normally use a multi-stage build: compile the
+JAR in a Maven builder image, then run it in a smaller JRE-only image rather
+than starting through Maven.
+
+### Removing a redundant gateway production file (`50086db`)
+
+The empty/redundant API Gateway production property file was removed after the
+Config Server URL became environment-driven in the default bootstrap file.
+
+Key learning: profile files should contain real overrides. Keeping an empty
+file suggests environment-specific behavior that does not exist and can hide
+where bootstrap values actually come from.
+
+### Defining the Kafka platform in Compose (`2145c19`)
+
+`docker-compose.kafka.yml` now defines a single-node KRaft broker, Schema
+Registry, and Kafbat. The broker advertises separate listeners:
+
+```yaml
+KAFKA_LISTENERS: DOCKER://:9092,HOST://:29092,CONTROLLER://:9093
+KAFKA_ADVERTISED_LISTENERS: DOCKER://broker:9092,HOST://localhost:29092
+```
+
+Host-run applications use `localhost:29092`; containers use `broker:9092`.
+Schema Registry is published on `8081`, and Kafbat maps host port `8085` to its
+container port `8080`. Its configuration is now committed under
+`infrastructure_config/kafbat_config.yml` and mounted through a relative path,
+making the Compose file portable across workstations.
+
+### Composing the complete production-profile platform (`e928ee9`)
+
+The root `docker-compose.yml` includes the Kafka and ELK definitions and adds
+two PostgreSQL databases, all five Spring services, Zipkin, production log
+mounts, and named database volumes.
+
+```yaml
+include:
+  - docker-compose.kafka.yml
+  - docker-compose.elk.yml
+
+services:
+  order-service:
+    image: order_service:1.0
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      CONFIG_SERVER_URL: http://config-server:8888
+```
+
+Important operational learnings:
+
+- Compose image names must match the tags built from each service directory.
+- Only API Gateway is published for application traffic; Config Server,
+  Eureka, Order, and Inventory remain internal to the Compose network.
+- Product and order PostgreSQL publish different host ports (`5433` and
+  `5434`) while both listen on `5432` inside their containers.
+- Application logs are written into `./PROD_LOGS`, and the root Compose service
+  overrides Logstash's local log mount to ingest that directory.
+- Named volumes preserve both databases across container recreation.
+- `depends_on` expresses startup ordering, but most entries do not wait for
+  application readiness. Services can take time to compile, boot, fetch remote
+  configuration, register with Eureka, and connect to infrastructure.
+- `docker compose ps` shows container state, while
+  `docker compose logs -f order-service` reveals application-level startup
+  progress and failures.
+
+The database credentials in the current Compose and external production
+properties are fixed demonstration values. A real production deployment must
+inject them through secrets rather than commit them.
 
 ## Cross-cutting conclusions and next steps
 

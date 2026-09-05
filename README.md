@@ -13,32 +13,23 @@ explanations.
 
 ## Prerequisites
 
-- Java 21
-- Docker Desktop with Docker Compose v2
-- PostgreSQL with `inventoryDB` and `orderDB` databases
-- External service configuration; use the
+- Java 21 and Docker Desktop with Docker Compose v2
+- Git credentials used by Config Server: `GIT_USERNAME` and `GIT_REPO_TOKEN`
+- Elasticsearch credentials: `ELASTIC_PASSWORD` and `KIBANA_PASSWORD`
+- The external
   [configuration repository](https://github.com/shubhgaur37/ecommerce-config-server)
-  as the sample
+  with these profile files:
+  - `application.properties`
+  - `application-prod.properties`
+  - `inventory-service.properties`
+  - `inventory-service-prod.properties`
+  - `order-service.properties`
+  - `order-service-prod.properties`
+  - `api-gateway.yml`
 
-## Components
-
-| Component | Responsibility | Local port |
-|---|---|---:|
-| API Gateway | Routes requests and applies gateway filters | `8080` |
-| Config Server | Loads configuration from the external [configuration repository](https://github.com/shubhgaur37/ecommerce-config-server) | `8888` |
-| Eureka | Registers and discovers application services | `8761` |
-| Inventory Service | Owns products and stock and publishes confirmation events | `9010` |
-| Order Service | Owns orders and consumes confirmation events | `9020` |
-| Kafka | Transports events; host applications use `localhost:29092` | `29092` |
-| Schema Registry | Stores Avro schemas | `8081` |
-| Kafbat | Provides a Kafka management UI | `8085` |
-| Elasticsearch | Stores aggregated application logs over HTTPS | `9200` |
-| Kibana | Provides log search and visualization | `5601` |
-| Zipkin | Displays distributed traces | `9411` |
-
-The API Gateway currently uses Spring Boot's default port because no
-`server.port` override is configured. Inventory uses the `/inventory` context
-path, and order uses `/orders`.
+The default files configure applications running on the host. The `*-prod`
+files override Eureka, Zipkin, and database addresses with Docker service names
+when `SPRING_PROFILES_ACTIVE=prod`.
 
 ## Architecture
 
@@ -80,18 +71,18 @@ flowchart LR
 
 ## How order processing works
 
-The configuration property `features.event_driven_order_flow.enabled` selects
-the active flow:
+The property `features.event_driven_order_flow.enabled` selects the active
+flow:
 
-- **Synchronous:** Order Service reserves stock through OpenFeign and then
-  saves the confirmed order.
+- **Synchronous:** Order Service reserves stock through OpenFeign and saves the
+  confirmed order.
 - **Event-driven:** Inventory Service reserves stock and publishes an Avro
   `OrderConfirmedEvent`; Order Service consumes the event and saves the order.
 
 The synchronous inventory call is protected by a Resilience4J circuit breaker.
-Kafka messages use Avro schemas generated from
-`src/main/resources/avro/order-confirmed-event.avsc` and resolved through
-Schema Registry.
+Kafka records use classes generated from
+`src/main/resources/avro/order-confirmed-event.avsc` and schemas resolved
+through Schema Registry.
 
 ## Distributed logging and tracing
 
@@ -104,74 +95,139 @@ flowchart LR
     services -. "Trace spans" .-> zipkin["Zipkin :9411"]
 ```
 
-Logback writes rolling service logs that Logstash sends to Elasticsearch for
-searching in Kibana. Micrometer Observation and Brave propagate trace context
-across HTTP and Kafka boundaries and report spans to Zipkin.
+Logstash sends rolling application logs to Elasticsearch for inspection in
+Kibana. Micrometer Observation and Brave propagate trace context across HTTP
+and Kafka and report spans to Zipkin.
 
-Zipkin is not included in the current Compose files. Run a local installation
-or container on its default port, `9411`:
+## Container ports
+
+The root `docker-compose.yml` includes the Kafka and ELK Compose files. Only
+ports listed in the **Host port** column are reachable through `localhost`.
+
+| Service | Container port | Host port |
+|---|---:|---:|
+| API Gateway | `8080` | `8080` |
+| Config Server | `8888` | — |
+| Eureka | `8761` | — |
+| Inventory Service | `9010` | — |
+| Order Service | `9020` | — |
+| Kafka internal listener | `9092` | — |
+| Kafka host listener | `29092` | `29092` |
+| Schema Registry | `8081` | `8081` |
+| Kafbat | `8080` | `8085` |
+| Zipkin | `9411` | `9411` |
+| Elasticsearch | `9200` | `9200` |
+| Kibana | `5601` | `5601` |
+| Product PostgreSQL | `5432` | `5433` |
+| Order PostgreSQL | `5432` | `5434` |
+
+Config Server, Eureka, Inventory Service, Order Service, and Logstash are
+available only to other containers on the Compose network. External requests
+enter through the API Gateway.
+
+## Run with Docker (`prod` profile)
+
+### 1. Export required configuration
+
+Run these in the shell that will start Docker Compose:
 
 ```bash
-docker run -d --name zipkin -p 9411:9411 openzipkin/zipkin
+export GIT_USERNAME='your-git-username'
+export GIT_REPO_TOKEN='your-config-repository-token'
+export ELASTIC_PASSWORD='your-elastic-password'
+export KIBANA_PASSWORD='your-kibana-system-password'
 ```
 
-The Zipkin UI is available at <http://localhost:9411>. In Kibana, create the
-data view `ecommerce-spring-boot-logs-*` to inspect aggregated service logs.
+Do not commit real credentials. You may alternatively place them in an
+untracked local `.env` file for Docker Compose.
 
-## Basic configuration
+### 2. Build the application images
 
-Create an untracked `.env` file in the repository root:
-
-```dotenv
-ELASTIC_PASSWORD=choose-a-local-elastic-password
-KIBANA_PASSWORD=choose-a-local-kibana-system-password
-GIT_REPO_TOKEN=your-config-repository-read-token
-```
-
-If Config Server is launched from a terminal, export the token first:
+Build each image from its service directory. The tags must match the image
+names in `docker-compose.yml`:
 
 ```bash
-export GIT_REPO_TOKEN='your-config-repository-read-token'
+cd config-server
+docker build -t config_server:1.0 .
+
+cd ../discovery-service
+docker build -t discovery_service:1.0 .
+
+cd ../inventory-service
+docker build -t inventory_service:1.0 .
+
+cd ../order-service
+docker build -t order_service:1.0 .
+
+cd ../api-gateway
+docker build -t api_gateway:1.0 .
 ```
 
-For an IDE launch, add `GIT_REPO_TOKEN` to the Config Server run configuration.
-Do not commit real credentials.
+### 3. Start the complete platform
 
-The external configuration repository supplies database connections, context
-paths, gateway routes, Eureka settings, management endpoints, and feature
-flags. Each client imports its configuration from:
+Return to the e-commerce repository root. Stop any previous deployment, then
+start the current one:
 
-```properties
-spring.config.import=configserver:http://localhost:8888
+```bash
+docker compose down
+docker compose up -d
 ```
 
-## Run the project
+The services may take some time to download dependencies, initialize
+databases, register with Eureka, and become ready.
 
-### 1. Start Kafka and Schema Registry
+Check overall status:
+
+```bash
+docker compose ps
+```
+
+Follow an individual service while it starts:
+
+```bash
+docker compose logs -f order-service
+```
+
+Replace `order-service` with another Compose service name when troubleshooting
+that service. Press `Ctrl+C` to stop following logs without stopping the
+container.
+
+### 4. Open the exposed services
+
+| Service | URL |
+|---|---|
+| API Gateway | <http://localhost:8080> |
+| Schema Registry | <http://localhost:8081> |
+| Kafbat | <http://localhost:8085> |
+| Zipkin | <http://localhost:9411> |
+| Elasticsearch | <http://localhost:9200> |
+| Kibana | <http://localhost:5601> |
+
+Product PostgreSQL is available at `localhost:5433`; order PostgreSQL is at
+`localhost:5434`. In Kibana, create the data view
+`ecommerce-spring-boot-logs-*` to inspect service logs.
+
+## Run applications locally
+
+### 1. Start supporting infrastructure
+
+From the repository root, start Kafka/Schema Registry/Kafbat and the ELK stack:
 
 ```bash
 docker compose -f docker-compose.kafka.yml up -d
+docker compose -f docker-compose.elk.yml up -d
 ```
 
-> **TODO:** Include the Kafbat configuration in this source repository and
-> replace the machine-specific mount in `docker-compose.kafka.yml` with a
-> repository-relative path.
-
-### 2. Start ELK and Zipkin
+Ensure local PostgreSQL databases named `inventoryDB` and `orderDB` are running
+on port `5432`. For tracing, also run Zipkin on its default port:
 
 ```bash
-docker compose up -d
 docker run -d --name zipkin -p 9411:9411 openzipkin/zipkin
 ```
 
-If Zipkin is already installed or running, only ensure it is available at
-`http://localhost:9411`.
+### 2. Run the Spring applications
 
-### 3. Start the Spring services
-
-Use either IntelliJ IDEA run configurations or the Maven wrapper. In both
-cases, start the services in the order shown below. When using Maven, run each
-command in a separate terminal:
+Use a separate terminal for each service and start them in this order:
 
 ```bash
 cd config-server && ./mvnw spring-boot:run
@@ -181,22 +237,23 @@ cd inventory-service && ./mvnw spring-boot:run
 cd api-gateway && ./mvnw spring-boot:run
 ```
 
-### 4. Verify the services
-
-| Check | URL |
-|---|---|
-| Config Server | <http://localhost:8888/order-service/default> |
-| Eureka dashboard | <http://localhost:8761> |
-| Schema Registry | <http://localhost:8081> |
-| Kafbat | <http://localhost:8085> |
-| Kibana | <http://localhost:5601> |
-| Zipkin | <http://localhost:9411> |
-
+The local configuration defaults to Config Server at `localhost:8888`, Kafka
+at `localhost:29092`, Schema Registry at `localhost:8081`, Eureka at
+`localhost:8761`, and Zipkin at `localhost:9411`.
 
 ## Stop the project
 
+For the complete Docker deployment:
+
 ```bash
 docker compose down
+```
+
+For locally run applications, stop the Java processes and then stop their
+supporting infrastructure:
+
+```bash
 docker compose -f docker-compose.kafka.yml down
+docker compose -f docker-compose.elk.yml down
 docker stop zipkin
 ```
