@@ -1,0 +1,141 @@
+include:
+  # Kafka, Schema Registry, and Kafbat.
+  - docker-compose.kafka.yml
+
+  # Elasticsearch, Logstash, and Kibana.
+  - docker-compose.elk.yml
+
+
+services:
+
+  product-db:
+    image: postgres
+    container_name: Product-DB
+
+    environment:
+      POSTGRES_DB: Product_Prod
+      POSTGRES_USER: PROD_USER
+      POSTGRES_PASSWORD: PROD_PASSWORD
+    ports:
+      - "5433:5432"
+    volumes:
+      - product-db-prod:/var/lib/postgresql
+
+
+  orders-db:
+    image: postgres
+    container_name: Orders-DB
+
+    environment:
+      POSTGRES_DB: Orders_Prod
+      POSTGRES_USER: PROD_USER
+      POSTGRES_PASSWORD: PROD_PASSWORD
+    ports:
+      - "5434:5432"
+
+    volumes:
+      - orders-db-prod:/var/lib/postgresql
+
+
+  config-server:
+    image: config_server:1.0
+    container_name: Config-Server
+
+
+    # Docker runs this healthcheck to determine when the Config Server is ready.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    environment:
+      - GIT_USERNAME=${GIT_USERNAME}
+      - GIT_REPO_TOKEN=${GIT_REPO_TOKEN}
+
+  discovery-service:
+    image: discovery_service:1.0
+    container_name: Discovery-Service
+
+
+  zipkin:
+    image: openzipkin/zipkin
+    container_name: Zipkin
+
+    ports:
+      # Exposes the Zipkin UI/API to the host.
+      - "9411:9411"
+
+
+  api-gateway:
+    image: api_gateway:1.0
+    container_name: API-Gateway
+    ports:
+       - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      CONFIG_SERVER_URL: http://config-server:8888
+
+    # Zipkin is not listed because it is already a dependency of the application services.
+    depends_on:
+      # Docker waits for the Config Server healthcheck to pass
+      # before starting this service.
+      - config-server
+      - discovery-service
+      - inventory-service
+      - order-service
+
+
+  inventory-service:
+    image: inventory_service:1.0
+    container_name: Inventory-Service
+
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      CONFIG_SERVER_URL: http://config-server:8888
+
+    volumes:
+      # Persist application log files on the host.
+      - ./PROD_LOGS:/app/logs
+
+    depends_on:
+      - product-db
+      - config-server
+      - discovery-service
+      - broker
+      - schema-registry
+      - zipkin
+
+
+  order-service:
+    image: order_service:1.0
+    container_name: Order-Service
+
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      CONFIG_SERVER_URL: http://config-server:8888
+
+    volumes:
+      # Persist application log files on the host.
+      - ./PROD_LOGS:/app/logs
+
+    depends_on:
+      - orders-db
+      - config-server
+      - discovery-service
+      - broker
+      - schema-registry
+      - zipkin
+
+
+  logstash:
+    volumes:
+      # Override the local log mount to read production logs.
+      - ./PROD_LOGS:/logs:ro
+
+
+volumes:
+  # PostgreSQL data persists independently of the containers.
+  product-db-prod:
+  orders-db-prod:
