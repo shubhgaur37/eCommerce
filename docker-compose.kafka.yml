@@ -1,0 +1,95 @@
+services:
+
+  broker:
+    image: confluentinc/cp-kafka:7.7.1
+    hostname: broker
+    container_name: broker
+    ports:
+      - "29092:29092"
+
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      # Kafka networking / listener configuration
+      #
+      # Spring Boot services are running directly on the host machine (Mac),
+      # so they cannot resolve Docker's internal hostname "broker".
+      # Therefore, they connect through the HOST listener exposed on port 29092.
+      #
+      # Flow:
+      # Spring Boot (Host)
+      #       ↓
+      # localhost:29092
+      #       ↓
+      # HOST listener
+      #       ↓
+      # Kafka container
+      #
+      # Kafbat and Schema Registry run inside the Docker network,
+      # so they use the DOCKER listener instead.
+      #
+      # Flow:
+      # Kafbat / Schema Registry (Docker)
+      #       ↓
+      # broker:9092
+      #       ↓
+      # DOCKER listener
+      #       ↓
+      # Kafka container
+      #
+      # Two listeners are required because "broker" is resolvable only inside
+      # the Docker network, while host applications connect through "localhost".
+      #
+      # listeners define where Kafka actually listens.
+      # advertised.listeners define the addresses Kafka returns to clients
+      # in metadata and tells them to use after the bootstrap connection.
+      #
+      # This is the same listener approach we previously used when configuring
+      # the Kafka broker manually using docker run.
+      KAFKA_LISTENERS: DOCKER://:9092,HOST://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: DOCKER://broker:9092,HOST://localhost:29092
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: DOCKER:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:9093
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.1
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      - broker
+    ports:
+      - "8081:8081"
+
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: broker:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+
+  kafbat:
+    image: ghcr.io/kafbat/kafka-ui
+    hostname: kafbat
+    container_name: kafbat
+    depends_on:
+      - broker
+      - schema-registry
+    ports:
+      - "8085:8080"
+
+    environment:
+      spring.config.additional-location: /tmp/config.yml
+
+    volumes:
+      - ./infrastructure_config/kafbat_config.yml:/tmp/config.yml
