@@ -5,6 +5,9 @@ and Docker-based observability. It demonstrates synchronous and asynchronous
 order flows, centralized configuration, runtime feature toggles, tracing, and
 ELK log aggregation.
 
+The chronological implementation notes and code examples are maintained separately in
+[`learnings/README.md`](learnings/README.md).
+
 ## What is in this repository
 
 | Area                      | Implementation                                              | Purpose                                                                                                                    |
@@ -214,13 +217,13 @@ the Config Server. This keeps environment-specific service configuration out
 of the application source repositories. A service cannot start normally if it
 cannot resolve this required Config Server import.
 
-## Kafka event messaging and tracing
+## Kafka event messaging, Avro, and tracing
 
 The `features.event_driven_order_flow.enabled` feature flag selects the order
-flow. When it is disabled, the order service synchronously reserves inventory
-and persists the order. When enabled, it requests inventory reservation first;
-after stock is reduced, inventory publishes an `OrderConfirmedEvent`, and the
-order service persists the order from `OrderConfirmedTopic`.
+flow. When disabled, the order service synchronously reserves inventory and
+persists the order. When enabled, inventory reserves stock and publishes an
+Avro `OrderConfirmedEvent`; the order service consumes the event and persists
+the confirmed order.
 
 ```mermaid
 flowchart LR
@@ -231,132 +234,99 @@ flowchart LR
 
     flag -->|Yes| reserve["Order Service requests inventory reservation"]
     reserve --> reduce["Inventory Service reduces stock"]
-    reduce --> event["Publish OrderConfirmedEvent"]
+    reduce --> event["Publish Avro OrderConfirmedEvent"]
     event --> topic[(OrderConfirmedTopic)]
     topic --> listener["order-creation-consumer"]
     listener --> asyncSave["Order Service saves confirmed order"]
 ```
 
-The inventory service explicitly declares `OrderCreatedItemsTopic` and
-`OrderConfirmedTopic`, each with three partitions and a replication factor of
-one. Explicit topic creation avoids depending on broker auto-creation; one
-replica is appropriate only for the local single-broker setup. Topic names are
-externalized, so producer and consumer properties must resolve to the same
-topic name.
+### Local Kafka platform
 
-`OrderCreatedItemsTopic` remains a simple string-message demonstration. The
-order service consumes it through two independent groups:
+The repository includes `docker-compose.kafka.yml` for a single-node KRaft
+Kafka broker, Confluent Schema Registry, and Kafbat UI.
 
-- `order-service-logger` records the message in application logs.
-- `order-service` prints the message and record metadata for troubleshooting.
-
-Different consumer groups each receive a copy of a record. Consumers in the
-same group share partitions and divide the work.
-
-### JSON event contracts
-
-`OrderConfirmedEvent` is published with a `Long` key and JSON value. The
-producer uses `LongSerializer` and Spring Kafka's `JsonSerializer`; the order
-consumer uses the matching `LongDeserializer` and `JsonDeserializer`.
-
-```mermaid
-sequenceDiagram
-    participant I as Inventory Service
-    participant K as Kafka
-    participant O as Order Service
-
-    I->>K: OrderConfirmedEvent (Long key, JSON payload)
-    Note over K: Type metadata and trace headers travel with the record
-    K->>O: Deserialize JSON into OrderConfirmedEvent
-    O->>O: Map event, save confirmed order
+```bash
+docker compose -f docker-compose.kafka.yml up -d
+docker compose -f docker-compose.kafka.yml ps
 ```
 
-Spring's JSON deserializer accepts type metadata only from trusted packages.
-Because `inventory-service` and `order-service` are separate Maven modules and
-do not currently depend on a shared event-contract module,
-`OrderConfirmedEvent` is declared in **both** services. The consumer-side copy
-deliberately uses the same fully qualified class name as the producer-side
-copy:
+Host-run Spring services connect to `localhost:29092`. Schema Registry and
+other containers use `broker:9092` because Docker service names resolve only
+inside the Compose network. Schema Registry is exposed at
+<http://localhost:8081>, and Kafbat is exposed at <http://localhost:8085>.
 
-```text
-com.codingshuttle.ecommerce.inventory_service.events.OrderConfirmedEvent
+The Kafbat volume in `docker-compose.kafka.yml` currently uses a
+machine-specific absolute path. Update it for your workstation before starting
+the stack.
+
+### Topics and consumer groups
+
+Inventory explicitly declares `OrderCreatedItemsTopic` and
+`OrderConfirmedTopic`, each with three partitions and replication factor one.
+Explicit creation avoids broker auto-creation defaults. One replica is suitable
+only for this local single-broker setup.
+
+`OrderCreatedItemsTopic` remains a string-message demonstration. Two
+independent order-service consumer groups show Kafka delivery semantics:
+
+- `order-service-logger` receives and logs its own copy.
+- `order-service` consumes the same topic and inspects record metadata.
+
+Different groups each receive a record; consumers in the same group divide the
+partitions. `auto-offset-reset=earliest` applies only when a group has no valid
+committed offset—it does not rewind an existing group.
+
+### Avro event contract
+
+Both services contain the schema at
+`src/main/resources/avro/order-confirmed-event.avsc`. Maven's
+`avro-maven-plugin` generates `OrderConfirmedEvent` and
+`OrderRequestItem` under `com.codingshuttle.ecommerce.events`.
+
+Inventory publishes with:
+
+```properties
+spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.LongSerializer
+spring.kafka.producer.value-serializer=io.confluent.kafka.serializers.KafkaAvroSerializer
+spring.kafka.producer.properties.schema.registry.url=http://localhost:8081
 ```
 
-Spring Kafka's producer adds that class name to the `__TypeId__` header. Keeping
-the same package and class name on the consumer classpath lets the JSON
-deserializer resolve the type. The consumer was also refactored to receive the
-typed event, map its `items` and `totalPrice`, set the order status to
-`CONFIRMED`, and persist the resulting order.
-
-The order service supplies the matching consumer configuration:
+Order consumes with:
 
 ```properties
 spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.LongDeserializer
-spring.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.JsonDeserializer
-spring.kafka.consumer.properties.spring.json.trusted.packages=com.codingshuttle.ecommerce.*
+spring.kafka.consumer.value-deserializer=io.confluent.kafka.serializers.KafkaAvroDeserializer
+spring.kafka.consumer.properties.schema.registry.url=http://localhost:8081
+spring.kafka.consumer.properties.specific.avro.reader=true
 ```
 
-The trusted-package property is required because `JsonDeserializer` does not
-instantiate classes named by message headers unless their package is trusted.
-Keep this scope as narrow as practical; setting it to a global `*` would allow
-arbitrary packages and weaken that deserialization safeguard. Duplicating the
-class is acceptable for this learning project, but a production system should
-move the event and its nested contract types into a dedicated, versioned
-module shared by producers and consumers.
+`specific.avro.reader=true` tells the consumer to return the generated
+specific record rather than a generic Avro record. Producer and consumer
+schemas must remain compatible. Duplicating the schema in both modules is
+acceptable for this learning project, but a shared, versioned contract artifact
+or one authoritative schema source is safer.
 
 ### Database and event consistency
 
-`KafkaTemplate.send()` is asynchronous: calling it does not prove that Kafka
-has accepted the event, and seeing a record only after the inventory method
-returns does not make the database update and Kafka publish atomic. A failed
-asynchronous publish after the stock transaction commits can leave stock
-reduced without an `OrderConfirmedEvent`. Use the outbox pattern in production:
-write the business update and an outbox record in one database transaction,
-then publish that record reliably in a separate step.
-
-### Connecting to the local broker
-
-Services run directly on the host, so they use the host-facing Kafka listener:
-
-```properties
-spring.kafka.bootstrap-servers=localhost:29092
-```
-
-Containers on the Docker network must instead use the internal listener (for
-example, `broker:9092`). `broker` is resolvable only inside that Docker network;
-from a host process it is not a valid broker address. This is why local Kafka
-setups commonly advertise separate host and Docker listeners.
-
-### Consumer offsets: the important caveat
-
-The order service configures:
-
-```properties
-spring.kafka.consumer.auto-offset-reset=earliest
-```
-
-`earliest` applies only when a consumer group has no committed offset for a
-partition. It does not rewind an existing group. If a group has already
-started at `latest` (or has consumed records), changing this property later
-will not replay earlier events. For a deliberate replay in local development,
-use a new group ID or explicitly reset that group's offsets with Kafka tooling.
+`KafkaTemplate.send()` is asynchronous. A database transaction that reduces
+stock and a Kafka publish are not automatically atomic: stock can commit while
+publishing fails. A production implementation should use a transactional
+outbox, make the consumer idempotent with a stable event identifier, and define
+retry/dead-letter handling.
 
 ### Kafka trace propagation
 
-Both services enable Micrometer Observation for Kafka templates and listeners:
+Both services enable Micrometer Observation:
 
 ```properties
 spring.kafka.template.observation-enabled=true
 spring.kafka.listener.observation-enabled=true
 ```
 
-With the existing Micrometer/Brave/Zipkin dependencies and tracing exporter
-configuration, these settings create producer and consumer observations and
-propagate trace context in Kafka headers. The order service receives a
-`ConsumerRecord` in one listener so its value, topic, partition, offset,
-timestamp, and headers can be inspected while troubleshooting. Header values
-are binary data in general, so production logging should avoid blindly
-rendering sensitive or non-text headers.
+Together with the Micrometer, Brave, and Zipkin dependencies, these settings
+create producer and consumer observations and propagate trace context in Kafka
+headers. Kafka headers are binary and may be sensitive, so production logging
+should not blindly render every header.
 
 ## Refresh scope: update configuration without a restart
 
@@ -490,124 +460,6 @@ filters:
 
 This keeps rate limiting at the edge, while the active service-side circuit
 breaker protects the order service from a failing inventory service.
-
-## Learnings from the incremental commits
-
-This project was built one capability at a time. The following section
-consolidates the main lessons from those commits so they can be reviewed
-without reconstructing the Git history.
-
-### Service boundaries and synchronous communication
-
-- **Start with explicit service ownership.** Order and inventory keep their
-  own controllers, DTOs, persistence models, and databases. A microservice
-  boundary is useful only when data and responsibilities are not silently
-  shared through implementation classes.
-- **Discovery removes fixed service locations.** Eureka allows clients and the
-  gateway to address an application by service name instead of maintaining a
-  list of host-and-port pairs.
-- **OpenFeign makes HTTP calls convenient, not reliable.** A declarative
-  client reduces boilerplate, but the remote call can still time out, fail, or
-  partially complete. Failure behavior must be designed explicitly.
-- **Resilience policies serve different purposes.** A circuit breaker prevents
-  repeated calls to an unhealthy dependency, retries handle selected transient
-  failures, and rate limiters protect capacity. Enabling all three without
-  understanding their interaction can amplify traffic or hide failures.
-
-### Gateway, filters, and authentication
-
-- **Global and route filters have different scope.** A global filter observes
-  every request, while a named `GatewayFilterFactory` runs only on routes that
-  declare it. Filter order determines when logging, authentication, and routing
-  behavior execute.
-- **Authentication at the edge must pass identity safely.** The gateway
-  validates the bearer token before adding `X-User-Id`; downstream services
-  should trust that header only when direct, unauthenticated access to them is
-  prevented.
-- **Circuit breaking and edge rate limiting solve different problems.** The
-  current circuit breaker protects the order-to-inventory dependency. Gateway
-  rate limiting would additionally require a key strategy and shared state
-  such as Redis.
-
-### Centralized configuration and refresh scope
-
-- **Bootstrap configuration must remain local.** A client needs its
-  `spring.application.name` and Config Server import before it can retrieve the
-  rest of its configuration.
-- **External configuration introduces startup dependencies.** Config clients
-  cannot start normally until the Config Server can reach its Git repository,
-  so startup order, repository access, and credentials are operational
-  concerns.
-- **`@RefreshScope` belongs on the bean holding refreshed values.** Refreshing
-  recreates that scoped bean; callers such as controllers do not also require
-  the annotation merely because they inject it.
-- **A distributed feature flag must be consistent.** Both order and inventory
-  participate in the event-driven order flow. Refreshing only one service can
-  leave them following different protocols.
-
-### Kafka messaging and event contracts
-
-- **Topics, serializers, and deserializers form one contract.** Producer and
-  consumer must agree on the topic name, key type, value format, and event
-  shape. A `LongSerializer`/`JsonSerializer` producer therefore needs the
-  corresponding `LongDeserializer`/`JsonDeserializer` consumer.
-- **Consumer groups control delivery and progress.** Different groups each
-  receive a record; instances in one group divide partitions. Offsets belong
-  to the group and partition, not to a particular application instance.
-- **`auto-offset-reset=earliest` is not a replay switch.** It applies only when
-  the group has no committed offset. Use a new group or explicitly reset
-  offsets when a local replay is intended.
-- **Spring JSON type headers couple the consumer to a Java type name.** In the
-  current design, `OrderConfirmedEvent` exists in both Maven modules with the
-  same fully qualified name so the consumer can resolve the producer's
-  `__TypeId__`. The consumer must also trust that package. A shared, versioned
-  contract module—or an explicitly mapped schema-based contract—is a cleaner
-  production design.
-- **Trust only the required deserialization packages.** The current
-  `com.codingshuttle.ecommerce.*` scope permits this project's event class.
-  Trusting every package with `*` removes an important defense against
-  untrusted type metadata.
-- **Publishing after a database update is not atomic.** An asynchronous Kafka
-  send and a database transaction can succeed independently. The transactional
-  outbox pattern closes the gap when reliable event publication is required.
-- **Observability crosses asynchronous boundaries through headers.** Enabling
-  observation on both `KafkaTemplate` and listeners propagates trace context,
-  but application logging must treat arbitrary Kafka headers as binary and
-  potentially sensitive.
-
-### Logging and distributed observability
-
-- **Correlation matters more than isolated log lines.** Trace and span IDs
-  connect gateway, service-to-service HTTP, and Kafka activity into one request
-  story.
-- **Structured, service-specific log files simplify ingestion.** Logback writes
-  each application's rolling files below `logs/`; Logstash tails those mounts
-  and sends events to date-based Elasticsearch indexes for Kibana discovery.
-- **Tracing and logging complement each other.** Zipkin explains request and
-  span timing, while Elasticsearch retains searchable application context and
-  errors.
-
-### Docker, networking, and secrets
-
-- **Compose service discovery is network-local.** Containers on the same
-  custom network use service names such as `elasticsearch` or `broker`;
-  processes on the host use published ports such as `localhost:9200` or
-  `localhost:29092`.
-- **Named volumes and bind mounts have different lifecycles.** The
-  `elastic_search_data` volume preserves indexed data, while Logstash receives
-  repository-owned configuration and logs through read-only bind mounts.
-- **Startup order is not readiness.** The one-time `setup` container checks
-  Elasticsearch readiness before configuring Kibana. `depends_on` by itself
-  only controls container start ordering unless paired with a health condition.
-- **Secrets should enter through the launch environment.** Compose reads local
-  values from `.env`; an IDE-run Java process needs those values configured in
-  its run configuration, and a terminal-run process needs them exported.
-- **Removing a leaked secret from the latest file is insufficient.** Rotate it
-  immediately and clean Git history where necessary because earlier commits,
-  clones, and forks may still contain it.
-- **Local TLS shortcuts are not production defaults.** Disabling certificate
-  verification can be acceptable for this self-signed learning environment,
-  but deployed systems should validate certificates.
 
 ## Useful development checks
 
