@@ -47,6 +47,21 @@ spring:
           default-label: main
 ```
 
+The resulting local service addresses are split between bootstrap configuration
+in this repository and environment configuration in the external repository:
+
+| Component | Port | Source of configuration |
+|---|---:|---|
+| API Gateway | `8080` | Spring Boot default; no `server.port` override is currently configured |
+| Config Server | `8888` | Local `config-server/application.yml` |
+| Eureka | `8761` | Local discovery-service properties |
+| Inventory Service | `9010` | External `inventory-service.properties` |
+| Order Service | `9020` | External `order-service.properties` |
+
+Inventory uses the `/inventory` context path and order uses `/orders`. This is
+why gateway path rewriting and downstream controller paths must be evaluated
+together rather than looking only at controller annotations.
+
 ### Refresh-scope placement (`f4df81e`)
 
 Refresh behavior was moved/refined around the feature configuration rather
@@ -163,6 +178,27 @@ setup:
 
 The setup command adds its own `curl` loop because `service_started` alone does
 not mean Elasticsearch is ready to accept authenticated API calls.
+
+After the stack starts, Kibana is available at
+`http://localhost:5601`. Elasticsearch is exposed to the host over HTTPS at
+`https://localhost:9200`. The local Elasticsearch container generates a
+self-signed certificate, so a direct command-line check must either trust that
+certificate explicitly or use `-k` for this local environment:
+
+```bash
+curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200
+```
+
+The `-k` flag disables certificate verification. It is useful for this local
+learning stack but should not become a production default; deployed clients
+should validate Elasticsearch's certificate using the correct CA.
+
+The local ELK endpoints are Kibana on `5601` and Elasticsearch on `9200`.
+They are started from the repository root with:
+
+```bash
+docker compose up -d
+```
 
 ### Passing the Git token safely (`d4c3a61`, `f9df95a`)
 
@@ -455,28 +491,90 @@ public NewTopic orderConfirmedTopic() {
 
 ### Refresh-scope mechanics (`24d6b92`)
 
-Controller/config interactions were refined to demonstrate that the
-refresh-scoped feature bean is recreated after `POST /actuator/refresh` and
-that callers continue through its proxy.
+This commit refined which beans need `@RefreshScope`. The order service keeps
+the feature flag in `FeaturesEnableConfig`, while inventory reads the same flag
+inside `ProductService`:
 
-Key learnings:
+```java
+// order-service
+@Configuration
+@RefreshScope
+public class FeaturesEnableConfig {
+    @Value("${features.event_driven_order_flow.enabled}")
+    private boolean eventDrivenOrderFlowEnabled;
+}
 
-- Refresh scope is lazy: invalidation clears the scoped target, and the next
-  use reconstructs it with new values.
-- The endpoint returns changed property keys, but behavioral verification is
-  still necessary.
-- Refresh all participating services when a property changes the interaction
-  protocol.
-
-Example refresh sequence after pushing configuration changes:
-
-```bash
-curl -X POST http://localhost:<order-port>/actuator/refresh
-curl -X POST http://localhost:<inventory-port>/actuator/refresh
+// inventory-service
+@Service
+@RefreshScope
+public class ProductService {
+    @Value("${features.event_driven_order_flow.enabled}")
+    private boolean eventDrivenFlowEnabled;
+}
 ```
 
-`<order-port>` and `<inventory-port>` come from the external configuration
-repository; they are placeholders, not literal shell syntax to copy unchanged.
+`OrdersController` does not need `@RefreshScope` merely because it injects
+`FeaturesEnableConfig`. Spring injects a scoped proxy, and after refresh the
+next call through that proxy reaches the recreated configuration bean.
+
+The relevant values are supplied by the external configuration repository:
+
+```properties
+my.variable=...
+features.event_driven_order_flow.enabled=false
+management.endpoints.web.exposure.include=refresh
+```
+
+The management property is required for `POST /actuator/refresh` to be
+available over HTTP. Exposing sensitive Actuator endpoints should be restricted
+appropriately outside local development.
+
+#### Testing configuration refresh
+
+1. Change the relevant service configuration in the external configuration
+   repository and push the change.
+2. Confirm the Config Server returns the updated property source.
+3. Refresh every running service that participates in the changed behavior:
+
+```bash
+curl -X POST http://localhost:<order-service-port>/actuator/refresh
+curl -X POST http://localhost:<inventory-service-port>/actuator/refresh
+```
+
+4. Call `GET /core/helloOrders` and exercise order creation to verify that both
+   services now follow the refreshed feature flag.
+
+The port placeholders must be replaced using the external configuration or
+the service startup logs.
+
+`@RefreshScope` refresh is lazy: the refresh operation invalidates the scoped
+target, and the next use recreates it with the new `@Value` properties. The
+endpoint's response may list changed property keys, but the behavior should
+still be tested.
+
+There is an important nuance in the current code. `my.variable` is injected
+directly into `OrdersController`, which is no longer refresh-scoped:
+
+```java
+public class OrdersController {
+    @Value("${my.variable}")
+    private String myVariable;
+
+    private final FeaturesEnableConfig featuresEnableConfig;
+}
+```
+
+Therefore the feature flag can refresh through the scoped
+`FeaturesEnableConfig` proxy, but the controller's direct `my.variable` value
+can remain stale. To make the sample variable refresh reliably, either move it
+into `FeaturesEnableConfig` and read it through the proxy, or place the
+controller itself back under `@RefreshScope`. Moving all refreshable settings
+into the dedicated configuration bean keeps the lifecycle more focused.
+
+Finally, the feature flag changes a distributed protocol: order uses it to
+select the request path, while inventory uses it to decide whether to publish
+`OrderConfirmedEvent`. Refreshing only one service can leave the system in an
+inconsistent state, so both services must be refreshed together.
 
 ### Full event-driven order completion (`9157316`)
 
@@ -545,13 +643,12 @@ parallel documentation edits can conflict just like code, so resolve them by
 checking the resulting document for duplicated, stale, or contradictory
 sections rather than trusting a clean textual merge alone.
 
-### Dedicated learning section and README separation (`075a2bc`, `8eaa65e`)
+### Introducing a dedicated learning section (`075a2bc`)
 
-The main README first gained a consolidated learning section. The later
-`8eaa65e` commit created this dedicated `learnings/` journal and refocused the
-root README on the project itself. The separation keeps operational setup and
-architecture easy to scan while preserving the detailed reasoning and code
-examples behind the implementation history.
+The main README first gained a consolidated learning section. This established
+the distinction between describing the current project and preserving the
+reasoning behind its incremental implementation. Later documentation commits
+completed the physical separation after the Avro work.
 
 ## Phase 3 — Migrating event contracts to Avro
 
@@ -659,6 +756,18 @@ spring.kafka.consumer.value-deserializer=io.confluent.kafka.serializers.KafkaAvr
 spring.kafka.consumer.properties.schema.registry.url=http://localhost:8081
 spring.kafka.consumer.properties.specific.avro.reader=true
 ```
+
+The local Kafka Compose environment exposes the broker to host-run Spring
+applications at `localhost:29092`, Schema Registry at `localhost:8081`, and
+Kafbat at `localhost:8085`. Containers use `broker:9092` instead of the host
+listener. Start the environment with:
+
+```bash
+docker compose -f docker-compose.kafka.yml up -d
+```
+
+The current Kafbat bind mount contains a workstation-specific absolute path,
+which must be changed when the repository is run on another machine.
 
 Current mapping correction in `OrdersService`:
 
