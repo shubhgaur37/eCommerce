@@ -660,13 +660,29 @@ spring.kafka.consumer.properties.schema.registry.url=http://localhost:8081
 spring.kafka.consumer.properties.specific.avro.reader=true
 ```
 
-Current JPA mapping correction in `OrdersService`:
+Current mapping correction in `OrdersService`:
+
+ModelMapper caused the ID issue. Its implicit matching treated the source
+event's `productId` as a match for the destination entity's `id` because the
+names are similar and both values are compatible `Long` types. That copied a
+product identifier into `OrderItem.id`, which is a separate JPA-generated
+primary key. Setting it back to `null` lets Hibernate generate the correct row
+identifier. The `setOrder(orders)` call solves a different problem: it sets the
+owning side of the bidirectional JPA relationship.
 
 ```java
 for (OrderItem item : orders.getItems()) {
-    item.setId(null);       // do not reuse productId as the entity primary key
-    item.setOrder(orders);  // establish the owning relationship
+    item.setId(null);       // undo ModelMapper's productId -> id mapping
+    item.setOrder(orders);  // establish the JPA owning relationship
 }
+```
+
+A cleaner long-term fix is to configure ModelMapper to skip the entity ID
+instead of repairing it after every mapping:
+
+```java
+modelMapper.typeMap(OrderRequestItem.class, OrderItem.class)
+    .addMappings(mapper -> mapper.skip(OrderItem::setId));
 ```
 
 ## Cross-cutting conclusions and next steps
