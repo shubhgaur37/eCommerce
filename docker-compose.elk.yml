@@ -38,9 +38,6 @@ services:
       # Elasticsearch at http://localhost:9200.
       - "9200:9200"
 
-    networks:
-      # Connect Elasticsearch to the custom ELK network.
-      - elk
 
 
   # One-time setup container.
@@ -122,10 +119,6 @@ services:
         
         echo "Kibana system password configured"
 
-    networks:
-      # Connect setup to the ELK network so it can reach Elasticsearch
-      # using the service name "elasticsearch".
-      - elk
 
 
   # Logstash reads application logs and sends them to Elasticsearch.
@@ -171,12 +164,6 @@ services:
       # Logstash container.
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
 
-    networks:
-      # Connect Logstash to the ELK network.
-      #
-      # This allows it to connect to Elasticsearch using:
-      # http://elasticsearch:9200
-      - elk
 
 
   # Kibana provides the UI for viewing and searching Elasticsearch data.
@@ -232,9 +219,6 @@ services:
       # http://localhost:5601
       - "5601:5601"
 
-    networks:
-      # Connect Kibana to the ELK network.
-      - elk
 
 
 # Docker-managed persistent volumes.
@@ -243,31 +227,10 @@ volumes:
   # Elasticsearch data persists independently of the Elasticsearch
   # container.
   #
-  # Docker Compose automatically prefixes this resource with the
-  # Compose project name unless an explicit name is provided.
+  # Docker Compose automatically prefixes the volume name with the
+  # Compose project name unless an explicit volume name is provided.
   #
-  # With:
-  # name: ecommerce
-  #
-  # Docker creates a volume similar to:
+  # For example, if the Compose project name is "ecommerce",
+  # Docker creates:
   # ecommerce_elastic_search_data
   elastic_search_data:
-
-
-# Custom Docker networks.
-networks:
-
-  # Custom network shared by Elasticsearch, Logstash, Kibana,
-  # and the one-time setup container.
-  #
-  # Containers connected to this network can communicate using
-  # Docker Compose service names.
-  #
-  # For example:
-  # http://elasticsearch:9200
-  elk:
-
-  # Docker Compose uses the "bridge" driver by default for local
-  # custom networks, so explicitly specifying it is not required.
-  #
-  # driver: bridge
