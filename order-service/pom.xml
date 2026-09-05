@@ -8,7 +8,7 @@
 		<version>3.3.4</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
-	<groupId>com.codingshuttle.ecommerce</groupId>
+	<groupId>com.shubh.ecommerce</groupId>
 	<artifactId>order-service</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>order-service</name>
@@ -135,7 +135,7 @@
 		SpecificRecord classes can therefore fail with:
 
 			java.lang.SecurityException:
-			Forbidden com.codingshuttle.ecommerce.events.OrderConfirmedEvent!
+			Forbidden com.shubh.ecommerce.events.OrderConfirmedEvent!
 
 		The application must explicitly trust allowed classes/packages using:
 
@@ -212,10 +212,10 @@
 
                Root cause:
                The generated class was in:
-                   com.codingshuttle.ecommerce.events
+                   com.shubh.ecommerce.events
 
                while OrdersService was in:
-                   com.codingshuttle.ecommerce.order_service.service
+                   com.shubh.ecommerce.order_service.service
 
                These are different Java packages. Java does not automatically resolve
                classes from another package just because the class exists.
@@ -223,7 +223,7 @@
                Fix:
                Explicitly import the generated class:
 
-                   import com.codingshuttle.ecommerce.events.OrderConfirmedEvent;
+                   import com.shubh.ecommerce.events.OrderConfirmedEvent;
 
                Maven is responsible for generating/compiling the class, but Maven does
                not modify handwritten Java source to add imports. IntelliJ can suggest

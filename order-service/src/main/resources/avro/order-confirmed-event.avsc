@@ -1,7 +1,7 @@
 {
   "type": "record",
   "name": "OrderConfirmedEvent",
-  "namespace": "com.codingshuttle.ecommerce.events",
+  "namespace": "com.shubh.ecommerce.events",
   "doc": "Event published after inventory has been successfully reduced.",
 
   "fields": [

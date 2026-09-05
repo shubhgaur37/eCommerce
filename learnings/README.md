@@ -71,7 +71,7 @@ Key learning: scope the mutable lifecycle to the smallest bean that owns
 refreshable state. Broad refresh scope makes object recreation and debugging
 harder to reason about.
 
-Current reference: `order-service/src/main/java/com/codingshuttle/ecommerce/order_service/config/FeaturesEnableConfig.java`.
+Current reference: `order-service/src/main/java/com/shubh/ecommerce/order_service/config/FeaturesEnableConfig.java`.
 
 ```java
 @Configuration
@@ -321,7 +321,7 @@ Key learnings:
   group at a point in time.
 
 Current reference:
-`inventory-service/src/main/java/com/codingshuttle/ecommerce/inventory_service/config/KafkaConfig.java`.
+`inventory-service/src/main/java/com/shubh/ecommerce/inventory_service/config/KafkaConfig.java`.
 
 ```java
 @Bean
@@ -348,7 +348,7 @@ Key learnings:
   assume every header is safe UTF-8 text.
 
 Current listener examples in
-`order-service/src/main/java/com/codingshuttle/ecommerce/order_service/service/OrdersService.java`:
+`order-service/src/main/java/com/shubh/ecommerce/order_service/service/OrdersService.java`:
 
 ```java
 @KafkaListener(
@@ -429,7 +429,7 @@ spring.kafka.producer.value-serializer=org.springframework.kafka.support.seriali
 # Order consumer
 spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.LongDeserializer
 spring.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.JsonDeserializer
-spring.kafka.consumer.properties.spring.json.trusted.packages=com.codingshuttle.ecommerce.*
+spring.kafka.consumer.properties.spring.json.trusted.packages=com.shubh.ecommerce.*
 ```
 
 The matching types were reflected in the template:
@@ -455,7 +455,7 @@ Key learnings:
   with the flag.
 
 Current decision point in
-`order-service/src/main/java/com/codingshuttle/ecommerce/order_service/controller/OrdersController.java`:
+`order-service/src/main/java/com/shubh/ecommerce/order_service/controller/OrdersController.java`:
 
 ```java
 if (featuresEnableConfig.isEventDrivenOrderFlowEnabled()) {
@@ -657,7 +657,7 @@ completed the physical separation after the Avro work.
 The JSON `OrderConfirmedEvent` contract was replaced with an Avro schema in
 both producer and consumer modules. The schema defines an array of nested
 `OrderRequestItem` records and a `double` total price in the shared namespace
-`com.codingshuttle.ecommerce.events`. The Avro Maven plugin generates
+`com.shubh.ecommerce.events`. The Avro Maven plugin generates
 `SpecificRecord` Java classes; inventory uses `KafkaAvroSerializer`, and order
 uses `KafkaAvroDeserializer` with `specific.avro.reader=true`. Both use Schema
 Registry at `http://localhost:8081`.
@@ -706,7 +706,7 @@ present in the order service):
 {
   "type": "record",
   "name": "OrderConfirmedEvent",
-  "namespace": "com.codingshuttle.ecommerce.events",
+  "namespace": "com.shubh.ecommerce.events",
   "fields": [
     {
       "name": "items",
