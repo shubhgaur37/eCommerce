@@ -332,7 +332,7 @@ In Postman, use `http://localhost:8080` with these gateway paths:
 | POST | `/api/v1/orders/core/create-order` |
 | GET | `/api/v1/orders/core` |
 
-For creation, send JSON with an existing product ID:
+For order creation, send JSON with an existing product ID:
 
 ```json
 {"items":[{"productId":1,"quantity":1}]}
