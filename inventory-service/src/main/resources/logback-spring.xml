@@ -9,12 +9,9 @@
         </encoder>
     </appender>
     <appender name="ROLLING-FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <!-- Trigger for rolling logs every day and limit size to 10 MB -->
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-            <!-- rollover daily -->
             <fileNamePattern>logs/${applicationName}/application-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
             <maxFileSize>10MB</maxFileSize>
-            <!-- keep 30 days' worth of history -->
             <maxHistory>30</maxHistory>
         </rollingPolicy>
 

@@ -32,11 +32,9 @@ public class ProductService {
     @Value("${features.event_driven_order_flow.enabled}")
     private boolean eventDrivenFlowEnabled;
 
-    // key and value type for the message
     private final KafkaTemplate<String,String> kafkaTemplate;
     private final KafkaTemplate<Long, OrderConfirmedEvent> kafkaTemplateOrderConfirmed;
 
-    // kafka topic to publish message
     @Value("${kafka.topic.OrderCreatedItemsTopicName}")
     private String orderCreatedItemsTopicName;
 
@@ -69,7 +67,6 @@ public class ProductService {
 
             Product product = productRepository.findById(productId).orElseThrow(() ->
                     new RuntimeException("Product not found with id: "+productId));
-            // for kafka message
             productNames.add(product.getName());
             if(product.getStock() < quantity) {
                 throw new RuntimeException("Product cannot be fulfilled for given quantity");
@@ -89,36 +86,17 @@ public class ProductService {
             sendOrderConfirmedMessage(orderConfirmedEvent);
         }
 
-        // Observation: While debugging, the Kafka message was not visible to the consumer
-        // until this @Transactional method completed and returned.
-        // KafkaTemplate.send() is asynchronous, so calling send() does not mean the message
-        // has already been successfully published and acknowledged by Kafka. The send returns
-        // a CompletableFuture and the actual Kafka operation may complete instantly or later.
-        // Therefore, this observation alone does not prove that Kafka publishing was deferred
-        // by the DB transaction or that the DB and Kafka operations are atomic.
-        // If Kafka fails asynchronously after the DB transaction commits, the stock reduction
-        // may remain committed while the OrderConfirmed event is never published.
-        // The Outbox Pattern avoids this inconsistency by saving the business change and the
-        // event in the same DB transaction and publishing the event to Kafka separately.
         sendOrderSuccessfulMessage(productNames);
         return totalPrice;
     }
 
-    // Kafka Demo Order Created Message
     private void sendOrderConfirmedMessage(OrderConfirmedEvent orderConfirmedEvent) {
 
-        // Kafka can auto-create the topic if it does not already exist,
-        // but relying on auto-creation is error-prone and not recommended
-        // for production. Topics should be created and configured explicitly.
         kafkaTemplateOrderConfirmed.send(orderConfirmedTopicName,orderConfirmedEvent);
     }
 
-    // Kafka Demo Order Created Message
     private void sendOrderSuccessfulMessage(List<String> productNames) {
 
-        // Kafka can auto-create the topic if it does not already exist,
-        // but relying on auto-creation is error-prone and not recommended
-        // for production. Topics should be created and configured explicitly.
         kafkaTemplate.send(
                 orderCreatedItemsTopicName,
                 "Order Created for items: " + productNames

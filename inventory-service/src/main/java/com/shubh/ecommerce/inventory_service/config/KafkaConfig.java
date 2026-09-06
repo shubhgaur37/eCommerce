@@ -17,9 +17,6 @@ public class KafkaConfig {
 
     @Bean
     public NewTopic orderCreatedItemTopic() {
-        // 3 partitions allow multiple consumers to process messages in parallel,
-        // increasing the potential throughput of the topic.
-        // Replication factor is 1 because our setup has only a single Kafka broker.
         return new NewTopic(orderCreatedItemsTopicName, 3, (short) 1);
     }
 

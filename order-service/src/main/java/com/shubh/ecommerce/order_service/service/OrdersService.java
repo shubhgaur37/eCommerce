@@ -38,9 +38,7 @@ public class OrdersService {
         return modelMapper.map(order, OrderRequestDto.class);
     }
 
-//    @Retry(name = "inventoryRetry", fallbackMethod = "createOrderFallback")
     @CircuitBreaker(name = "inventoryCircuitBreaker", fallbackMethod = "createOrderFallback")
-//    @RateLimiter(name = "inventoryRateLimiter", fallbackMethod = "createOrderFallback")
     public OrderRequestDto createOrder(OrderRequestDto orderRequestDto) {
         log.info("Calling the createOrder method");
         Double totalPrice = reserveInventory(orderRequestDto);
@@ -66,11 +64,8 @@ public class OrdersService {
     public void createOrderFromInventoryReductionEvent(OrderConfirmedEvent orderConfirmedEvent){
         Orders orders = modelMapper.map(orderConfirmedEvent, Orders.class);
         for(OrderItem orderItem: orders.getItems()) {
-            // ModelMapper implicitly maps productId to id because of similar property names
-            // and compatible Long types. Reset it so Hibernate can generate the primary key.
             orderItem.setId(null);
 
-            // Set the owning side of the Orders-OrderItem relationship.
             orderItem.setOrder(orders);
         }
         orders.setTotalPrice(orderConfirmedEvent.getTotalPrice());
@@ -86,17 +81,6 @@ public class OrdersService {
         return new OrderRequestDto();
     }
 
-    // Consumer group ID identifies the consumer group.
-    // The committed offset is maintained by Kafka for each partition of the group,
-    // not by an individual consumer instance.
-    //
-    // If a consumer goes down and a new consumer joins the same group,
-    // Kafka reassigns the partitions to the new consumer.
-    // The new consumer continues from the last committed offset of the group,
-    // rather than starting from the beginning.
-    //
-    // This allows consumers to safely go down and come back up without
-    // losing their position in the topic.
     @KafkaListener(
             topics = {"${kafka.topic.OrderCreatedItemsTopic}"},
             groupId = "order-service-logger"
@@ -105,24 +89,10 @@ public class OrdersService {
         log.info("OrderCreated Logger Message: " + message);
     }
 
-
-
-    // Listen to the topic configured in application properties.
-    // Multiple topics can be passed to the listener by providing multiple
-    // topic names or property placeholders in the topics array.
-    // This method will be invoked whenever a message is received from any
-    // of the configured topics.
-
-    // uses the default group ID defined in application.properties
     @KafkaListener(topics = {"${kafka.topic.OrderCreatedItemsTopic}"})
     public void printConsoleOrderCreatedItemsMessage(ConsumerRecord<String, String> record) {
-        // ConsumerRecord provides access to the complete Kafka record, including the message value,
-        // key, topic, partition, offset, timestamp, and headers. Using it is useful for debugging,
-        // monitoring, and troubleshooting because we can identify exactly where a message came from,
-        // its position within the topic, and inspect metadata such as trace headers.
         System.out.println("OrderCreated Console Consumer Message: "+ record.value());
 
-        // check whether message contains trace headers
         record.headers().forEach(header ->
                 log.info("KAFKA Header: {} = {}", header.key(), new String(header.value()))
         );

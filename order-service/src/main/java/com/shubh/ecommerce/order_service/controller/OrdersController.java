@@ -16,9 +16,6 @@ import java.util.List;
 @RequestMapping("/core")
 @RequiredArgsConstructor
 @Slf4j
-// @RefreshScope is not required here because FeaturesEnableConfig is already
-// refresh-scoped. The controller uses that bean to access the latest
-// configuration values after /actuator/refresh.
 public class OrdersController {
 
     private final OrdersService orderService;
@@ -55,13 +52,13 @@ public class OrdersController {
     public ResponseEntity<List<OrderRequestDto>> getAllOrders(HttpServletRequest httpServletRequest) {
         log.info("Fetching all orders via controller");
         List<OrderRequestDto> orders = orderService.getAllOrders();
-        return ResponseEntity.ok(orders);  // Returns 200 OK with the list of orders
+        return ResponseEntity.ok(orders);
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<OrderRequestDto> getOrderById(@PathVariable Long id) {
         log.info("Fetching order with ID: {} via controller", id);
         OrderRequestDto order = orderService.getOrderById(id);
-        return ResponseEntity.ok(order);  // Returns 200 OK with the order
+        return ResponseEntity.ok(order);
     }
 }

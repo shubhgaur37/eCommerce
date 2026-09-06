@@ -31,13 +31,6 @@ public class ProductController {
 
         log.info(httpServletRequest.getHeader("x-custom-header"));
 
-//        ServiceInstance orderService = discoveryClient.getInstances("order-service").getFirst();
-
-//        return restClient.get()
-//                .uri(orderService.getUri()+"/orders/core/helloOrders")
-//                .retrieve()
-//                .body(String.class);
-
         return ordersFeignClient.helloOrders();
     }
 
