@@ -8,17 +8,17 @@ across host and Docker environments.
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     configRepo["External configuration repository"] -->|"Git configuration"| configServer["1. Config Server :8888"]
 
     subgraph platform["Central platform"]
-        gateway["4. API Gateway :8080"]
-        discovery["2. Eureka :8761"]
+        gateway["3. API Gateway :8080"]
+        discovery["1. Eureka :8761"]
     end
 
     subgraph applications["Business services"]
-        order["3. Order Service :9020"]
-        inventory["3. Inventory Service :9010"]
+        order["2. Order Service :9020"]
+        inventory["2. Inventory Service :9010"]
     end
 
     configServer -. "Load configuration" .-> gateway
@@ -33,33 +33,51 @@ flowchart LR
     order -. "Registration / discovery" .-> discovery
     inventory -. "Registration / discovery" .-> discovery
 
-    inventory -->|"Read / write products"| productDb[("Product PostgreSQL")]
-    order -->|"Read / write orders"| orderDb[("Order PostgreSQL")]
+    inventory -->|"Read / write products"| productDb[("1. Product PostgreSQL")]
+    order -->|"Read / write orders"| orderDb[("1. Order PostgreSQL")]
 
     subgraph events["Kafka event platform"]
-        kafka[(Kafka)]
-        schemaRegistry["Schema Registry :8081"]
+        kafka[("1. Kafka")]
+        schemaRegistry["1. Schema Registry :8081"]
     end
 
     inventory -->|"Publish OrderConfirmedEvent"| kafka
     kafka -->|"Consume OrderConfirmedTopic"| order
     inventory -. "Avro serialization" .-> schemaRegistry
     order -. "Avro deserialization" .-> schemaRegistry
+
+    linkStyle 0,1,2,3 stroke:#A78BFA
+    linkStyle 4,5,6 stroke:#60A5FA
+    linkStyle 7,8,9 stroke:#FBBF24
+    linkStyle 10,11 stroke:#34D399
+    linkStyle 12,13 stroke:#FB923C
+    linkStyle 14,15 stroke:#F472B6
 ```
 
-**Startup order:** **1. Config Server → 2. Eureka → 3. Order and Inventory →
-4. API Gateway.** Start the supporting databases, Kafka, and Schema Registry
-   before the business services. Verify each stage is ready before proceeding;
-   the numbers describe the recommended startup sequence, not automatic readiness
-   guarantees from Compose. Client requests begin after startup.
+**Arrow legend**
 
-**Arrow key:** solid lines show API, database, and event traffic; dotted lines
-show configuration, discovery, and schema dependencies. Double-headed HTTP
-connections represent requests and responses.
+```mermaid
+flowchart TB
+    httpA["Client / service"] <-->|"HTTP requests / responses"| httpB["Gateway / service"]
+    dbA["Service"] -->|"Database reads / writes"| dbB["PostgreSQL"]
+    eventA["Producer / Kafka"] -->|"Kafka events"| eventB["Kafka / consumer"]
+    configA["Configuration source"] -. "Configuration" .-> configB["Config Server / service"]
+    discoveryA["Gateway / service"] -. "Registration / discovery" .-> discoveryB["Eureka"]
+    schemaA["Service"] -. "Avro schemas" .-> schemaB["Schema Registry"]
 
-Order and Inventory own separate databases. The gateway routes client requests
-through Eureka-backed service discovery; Config Server supplies shared and
-environment-specific settings from Git.
+    linkStyle 0 stroke:#60A5FA
+    linkStyle 1 stroke:#34D399
+    linkStyle 2 stroke:#FB923C
+    linkStyle 3 stroke:#A78BFA
+    linkStyle 4 stroke:#FBBF24
+    linkStyle 5 stroke:#F472B6
+```
+
+**Recommended startup order**
+
+1. **Infrastructure:** PostgreSQL, Kafka, Schema Registry, Config Server, Eureka
+2. **Business services:** Order and Inventory
+3. **API Gateway**
 
 ## Engineering highlights
 
@@ -332,7 +350,7 @@ In Postman, use `http://localhost:8080` with these gateway paths:
 | POST | `/api/v1/orders/core/create-order` |
 | GET | `/api/v1/orders/core` |
 
-For order creation, send JSON with an existing product ID:
+For creation, send JSON with an existing product ID:
 
 ```json
 {"items":[{"productId":1,"quantity":1}]}
